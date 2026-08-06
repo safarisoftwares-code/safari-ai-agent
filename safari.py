@@ -77,12 +77,33 @@ def search_web(query):
 # ============================================
 def safari_think(message, history=""):
     try:
+        # Build conversation context
+        messages = [
+            {"role": "system", "content": """You are Safari AI, a helpful assistant by Safari Softwares. 
+            
+IMPORTANT RULES:
+1. Remember what was discussed earlier in the conversation
+2. If user asks about something mentioned before, refer back to it
+3. Be consistent with your previous answers
+4. Admit when you don't know something instead of guessing
+5. Keep answers concise and relevant
+6. Use web search only when you genuinely need current information"""}
+        ]
+        
+        # Add conversation history
+        if history:
+            for line in history.split('\n'):
+                if line.startswith("User: "):
+                    messages.append({"role": "user", "content": line[6:]})
+                elif line.startswith("Safari: "):
+                    messages.append({"role": "assistant", "content": line[8:]})
+        
+        # Add current message
+        messages.append({"role": "user", "content": message})
+        
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": "You are Safari AI, a helpful assistant by Safari Softwares. Answer questions directly and helpfully."},
-                {"role": "user", "content": message}
-            ],
+            messages=messages,
             temperature=0.3,
             max_tokens=500
         )
@@ -90,7 +111,7 @@ def safari_think(message, history=""):
         return response.choices[0].message.content
     
     except Exception as e:
-        return f"I apologize, but I'm having trouble processing that request. Please try again. Error: {str(e)}"
+        return f"I'm having trouble processing that. Could you rephrase? Error: {str(e)}"
         
         # Check for tool use
         if "TOOL:" in reply and "INPUT:" in reply:
