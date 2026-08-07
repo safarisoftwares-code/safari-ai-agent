@@ -29,7 +29,7 @@ def search_web(q):
 # Brain
 def think(msg, hist=""):
     try:
-        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. Keep answers short. If unsure, say so."}]
+        msgs = [{"role": "system", "content": "You are Safari AI, created by Safari Softwares. Be warm, friendly, and enthusiastic. Use emojis naturally. Remember everything the user said in this conversation and refer back to it. When users ask follow-up questions, show that you remember earlier context. Structure answers clearly with bullet points when helpful. Be honest about your capabilities. If you do not know something, say so. Keep a positive, encouraging tone."}]
         if hist:
             for line in hist.split("\n"):
                 if line.startswith("U:"): msgs.append({"role": "user", "content": line[2:]})
@@ -74,7 +74,7 @@ button{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30
 button:hover{background:#8b4513}
 .f{text-align:center;padding:8px;font-size:10px;color:#999}
 .f a{color:#d2691e}</style></head><body>
-<div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>Safari AI Agent</h1><p>by Safari Softwares</p></div></div>
+<div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>🦁 Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
 <div id="b"><div class="m s">🦁 Hello! Ask me anything!</div></div>
 <div class="i"><input id="q" placeholder="Type your question..." autofocus onkeypress="if(event.key==='Enter')ask()"><button onclick="ask()">Ask</button></div>
 <div class="f">2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a></div></div>
