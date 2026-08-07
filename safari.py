@@ -61,7 +61,7 @@ async def home():
     return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .c{background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);width:100%;max-width:700px;height:90vh;display:flex;flex-direction:column;overflow:hidden}
-.h{background:linear-gradient(135deg,#d2691e,#8b4513);color:#fff;padding:20px;display:flex;align-items:center;justify-content:center;gap:12px;text-align:center}
+.h{background:linear-gradient(135deg,#d2691e,#8b4513);color:#fff;padding:20px;display:flex;align-items:center;gap:12px}
 .h h1{font-size:20px}.h p{font-size:11px;opacity:.9}
 #b{flex:1;overflow-y:auto;padding:20px;background:#fffaf5}
 .m{max-width:80%;padding:12px 16px;border-radius:18px;margin:8px 0;word-wrap:break-word}
@@ -72,7 +72,7 @@ async def home():
 #q:focus{border-color:#d2691e}
 button{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30px;cursor:pointer;font-weight:700}
 button:hover{background:#8b4513}
-.f{text-align:center;padding:8px;font-size:10px;color:#999;width:100%}
+.f{text-align:center;padding:8px;font-size:10px;color:#999}
 .f a{color:#d2691e}</style></head><body>
 <div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>Safari AI Agent</h1><p>by Safari Softwares</p></div></div>
 <div id="b"><div class="m s">🦁 Hello! Ask me anything!</div></div>
