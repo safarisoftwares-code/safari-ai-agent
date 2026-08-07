@@ -74,7 +74,7 @@ button{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30
 button:hover{background:#8b4513}
 .f{text-align:center;padding:8px;font-size:10px;color:#999}
 .f a{color:#d2691e}</style></head><body>
-<div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>🦁 Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
+<div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
 <div id="b"><div class="m s">🦁 Hello! Ask me anything!</div></div>
 <div class="i"><input id="q" placeholder="Type your question..." autofocus onkeypress="if(event.key==='Enter')ask()"><button onclick="ask()">Ask</button></div>
 <div class="f">2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a></div></div>
