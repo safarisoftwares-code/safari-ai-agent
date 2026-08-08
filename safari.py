@@ -3,44 +3,52 @@ import json
 import hashlib
 import time
 from datetime import datetime
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from groq import Groq
 import httpx
 
-# Config
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "your-key-here")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "your-groq-key-here")
+
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-groq = Groq(api_key=GROQ_API_KEY)
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+
 users = {}
 chats = {}
 
-# Tools
-def search_web(q):
+def load_users():
+    global users
     try:
-        r = httpx.get(f"https://api.duckduckgo.com/?q={q}&format=json", timeout=10)
-        d = r.json()
-        return d.get("Abstract", "") or d.get("RelatedTopics", [{}])[0].get("Text", "")[:1000]
+        with open("users.json", "r") as f:
+            users = json.load(f)
     except:
-        return ""
+        users = {}
 
-# Brain
+def save_users():
+    try:
+        with open("users.json", "w") as f:
+            json.dump(users, f, indent=2)
+    except:
+        pass
+
+load_users()
+
 def think(msg, hist=""):
     try:
-        msgs = [{"role": "system", "content": "You are Safari AI, created by Safari Softwares. Be warm, friendly, and enthusiastic. Use emojis naturally. Remember everything the user said in this conversation and refer back to it. When users ask follow-up questions, show that you remember earlier context. Structure answers clearly with bullet points when helpful. Be honest about your capabilities. If you do not know something, say so. Keep a positive, encouraging tone."}]
+        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. Keep answers short. If unsure, say so."}]
         if hist:
             for line in hist.split("\n"):
                 if line.startswith("U:"): msgs.append({"role": "user", "content": line[2:]})
                 elif line.startswith("S:"): msgs.append({"role": "assistant", "content": line[2:]})
         msgs.append({"role": "user", "content": msg})
-        r = groq.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=400)
+        r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=400)
         return r.choices[0].message.content
     except Exception as e:
         return f"Error: {e}"
 
-# Routes
 @app.post("/register")
 async def register(email: str = Form(...)):
     key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
@@ -59,10 +67,19 @@ async def ask(question: str = Form(...), session: str = Form(default="default"))
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .c{background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);width:100%;max-width:700px;height:90vh;display:flex;flex-direction:column;overflow:hidden}
 .h{background:linear-gradient(135deg,#d2691e,#8b4513);color:#fff;padding:20px;display:flex;align-items:center;gap:12px}
 .h h1{font-size:20px}.h p{font-size:11px;opacity:.9}
+.tabs{display:flex;overflow-x:auto;background:#fff;border-bottom:2px solid #f0e0d0;padding:0 5px;min-height:40px;align-items:flex-end}
+.tab{padding:8px 16px;background:#f5e6d3;border:1px solid #e0c8a8;border-bottom:0;border-radius:10px 10px 0 0;margin:0 3px;cursor:pointer;white-space:nowrap;font-size:13px;position:relative;max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.tab.active{background:#fff;border-bottom:2px solid #fff;margin-bottom:-2px;font-weight:bold;color:#8b4513}
+.tab .del{position:absolute;right:3px;top:3px;width:18px;height:18px;background:#ff6b6b;color:#fff;border-radius:50%;display:none;align-items:center;justify-content:center;font-size:12px;line-height:1;cursor:pointer}
+.tab:hover .del{display:flex}
+.tab.add{background:#d2691e;color:#fff;font-weight:bold;font-size:18px;padding:8px 12px;border-radius:10px 10px 0 0}
+.tab.add:hover{background:#8b4513}
 #b{flex:1;overflow-y:auto;padding:20px;background:#fffaf5}
 .m{max-width:80%;padding:12px 16px;border-radius:18px;margin:8px 0;word-wrap:break-word}
 .u{background:#8b4513;color:#fff;margin-left:auto;border-bottom-right-radius:6px}
@@ -73,15 +90,173 @@ async def home():
 button{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30px;cursor:pointer;font-weight:700}
 button:hover{background:#8b4513}
 .f{text-align:center;padding:8px;font-size:10px;color:#999}
-.f a{color:#d2691e}</style></head><body>
-<div class="c"><div class="h"><span style="font-size:32px">🦁</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
-<div id="b"><div class="m s">🦁 Hello! Ask me anything!</div></div>
+.f a{color:#d2691e}
+</style></head><body>
+<div class="c">
+<div class="h"><span style="font-size:32px">🦁</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
+<div class="tabs" id="tabs"></div>
+<div id="b"></div>
 <div class="i"><input id="q" placeholder="Type your question..." autofocus onkeypress="if(event.key==='Enter')ask()"><button onclick="ask()">Ask</button></div>
-<div class="f">2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a></div></div>
-<script>const sid='s'+Math.random().toString(36).substr(2,9);
-async function ask(){const i=document.getElementById('q'),b=document.getElementById('b'),q=i.value.trim();if(!q)return;b.innerHTML+='<div class="m u">'+q+'</div>';i.value='';b.scrollTop=b.scrollHeight;
-const f=new FormData();f.append('question',q);f.append('session',sid);
-const r=await fetch('/ask',{method:'POST',body:f});const d=await r.json();b.innerHTML+='<div class="m s">'+d.response+'</div>';b.scrollTop=b.scrollHeight;}</script></body></html>"""
+<div class="f">2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a></div>
+</div>
+<script>
+let chats={};
+let activeChat=null;
+
+function loadChats(){
+    try{
+        const saved=localStorage.getItem('safari_chats');
+        if(saved) chats=JSON.parse(saved);
+    }catch(e){}
+    if(Object.keys(chats).length===0){
+        const id='chat_'+Date.now();
+        chats[id]={name:'New Chat',messages:[]};
+        saveChats();
+    }
+}
+
+function saveChats(){
+    try{
+        localStorage.setItem('safari_chats',JSON.stringify(chats));
+    }catch(e){}
+}
+
+function getChatPreview(messages){
+    if(!messages||messages.length===0) return 'New Chat';
+    const first=messages[0];
+    if(first.startsWith('U:')) return first.substring(2).substring(0,30);
+    return 'Chat';
+}
+
+function renderTabs(){
+    const tabs=document.getElementById('tabs');
+    tabs.innerHTML='';
+    const chatIds=Object.keys(chats);
+    chatIds.forEach(id=>{
+        const chat=chats[id];
+        if(!chat.name||chat.name==='New Chat'){
+            chat.name=getChatPreview(chat.messages);
+        }
+        const tab=document.createElement('div');
+        tab.className='tab'+(id===activeChat?' active':'');
+        const displayName=chat.name.length>20?chat.name.substring(0,20)+'...':chat.name;
+        tab.innerHTML=displayName;
+        tab.title=chat.name;
+        tab.addEventListener('click', function(e) {
+            if (e.target.classList.contains('del')) return;
+            switchChat(id);
+        });
+        if(chatIds.length>1){
+            const del=document.createElement('span');
+            del.className='del';
+            del.innerHTML='×';
+            del.title='Delete chat';
+            del.addEventListener('click', function(e) {
+                e.stopPropagation();
+                e.preventDefault();
+                if(confirm('Delete this chat?')) {
+                    deleteChat(id);
+                }
+            });
+            tab.appendChild(del);
+        }
+        tabs.appendChild(tab);
+    });
+    const addBtn=document.createElement('div');
+    addBtn.className='tab add';
+    addBtn.innerHTML='+';
+    addBtn.title='New Chat';
+    addBtn.addEventListener('click', newChat);
+    tabs.appendChild(addBtn);
+}
+
+function switchChat(id){
+    activeChat=id;
+    renderTabs();
+    renderMessages();
+}
+
+function newChat(){
+    const id='chat_'+Date.now();
+    chats[id]={name:'New Chat',messages:[]};
+    activeChat=id;
+    saveChats();
+    renderTabs();
+    renderMessages();
+}
+
+function deleteChat(id){
+    if(Object.keys(chats).length<=1) return;
+    delete chats[id];
+    saveChats();
+    if(activeChat===id){
+        activeChat=Object.keys(chats)[0];
+    }
+    renderTabs();
+    renderMessages();
+}
+
+function renderMessages(){
+    const box=document.getElementById('b');
+    box.innerHTML='';
+    if(!activeChat||!chats[activeChat]) return;
+    const msgs=chats[activeChat].messages||[];
+    msgs.forEach(m=>{
+        if(m.startsWith('U:')){
+            box.innerHTML+='<div class="m u">'+m.substring(2)+'</div>';
+        }else if(m.startsWith('S:')){
+            box.innerHTML+='<div class="m s">'+m.substring(2)+'</div>';
+        }
+    });
+    if(msgs.length===0){
+        box.innerHTML='<div class="m s">🦁 Hello! Ask me anything!</div>';
+    }
+    box.scrollTop=box.scrollHeight;
+}
+
+const sid='s'+Math.random().toString(36).substr(2,9);
+
+async function ask(){
+    const input=document.getElementById('q');
+    const question=input.value.trim();
+    if(!question) return;
+    if(!activeChat||!chats[activeChat]){
+        newChat();
+    }
+    if(!chats[activeChat].messages) chats[activeChat].messages=[];
+    chats[activeChat].messages.push('U:'+question);
+    if(chats[activeChat].name==='New Chat'){
+        chats[activeChat].name=getChatPreview(chats[activeChat].messages);
+    }
+    saveChats();
+    renderTabs();
+    renderMessages();
+    input.value='';
+    
+    const form=new FormData();
+    form.append('question',question);
+    form.append('session',activeChat);
+    const r=await fetch('/ask',{method:'POST',body:form});
+    const d=await r.json();
+    chats[activeChat].messages.push('S:'+d.response);
+    saveChats();
+    renderMessages();
+}
+
+loadChats();
+if(!activeChat) activeChat=Object.keys(chats)[0]||'chat_'+Date.now();
+if(!chats[activeChat]){chats[activeChat]={name:'New Chat',messages:[]};saveChats();}
+renderTabs();
+renderMessages();
+</script></body></html>"""
+
+@app.get("/terms")
+async def terms():
+    return HTMLResponse("<h1>Terms of Service</h1><p>Safari Softwares. safarisoftwares@gmail.com</p>")
+
+@app.get("/privacy")
+async def privacy():
+    return HTMLResponse("<h1>Privacy Policy</h1><p>Safari Softwares. safarisoftwares@gmail.com</p>")
 
 @app.get("/health")
 async def health():
