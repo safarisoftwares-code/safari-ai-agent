@@ -518,6 +518,107 @@ a{color:#d2691e}
 <a href="/" class="back">← Back to Safari AI</a>
 </div></body></html>"""
 
+# ============================================
+# ADMIN PANEL
+# ============================================
+
+ADMIN_PASSWORD = "safari2026"
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request, pw: str = ""):
+    if pw != ADMIN_PASSWORD:
+        return """<!DOCTYPE html><html><head><title>Admin Login</title>
+<style>body{font-family:Segoe UI;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5e6d3}
+form{background:#fff;padding:30px;border-radius:10px;box-shadow:0 5px 20px rgba(0,0,0,.2)}
+input{padding:10px;margin:10px 0;width:100%;border:2px solid #d2691e;border-radius:5px;font-size:16px}
+button{background:#d2691e;color:#fff;border:0;padding:10px 20px;border-radius:5px;cursor:pointer;font-weight:bold;width:100%}</style></head><body>
+<form><h2>Admin Login</h2><input type='password' name='pw' placeholder='Password'><button type='submit'>Login</button></form></body></html>"""
+    
+    # Admin panel
+    user_rows = ""
+    for key, user in users.items():
+        user_rows += f"""<tr>
+            <td>{user.get('email','N/A')}</td>
+            <td>{user.get('plan','free')}</td>
+            <td>{user.get('queries',0)}</td>
+            <td>{user.get('total_queries',0)}</td>
+            <td><code>{key[:16]}...</code></td>
+            <td><a href='/admin/revoke?key={key}&pw={pw}' onclick='return confirm(\"Revoke this key?\")' style='color:red'>Revoke</a></td>
+        </tr>"""
+    
+    return f"""<!DOCTYPE html><html><head><title>Admin - Safari AI</title>
+<style>body{{font-family:Segoe UI;background:#f5e6d3;padding:20px}}
+.c{{max-width:1000px;margin:auto;background:#fff;padding:20px;border-radius:10px}}
+h1{{color:#8b4513}}table{{width:100%;border-collapse:collapse;margin:20px 0}}
+th,td{{padding:10px;border:1px solid #e0c8a8;text-align:left}}
+th{{background:#d2691e;color:#fff}}
+.form{{background:#faf5f0;padding:15px;border-radius:10px;margin:20px 0}}
+input,select{{padding:8px;margin:5px;border:2px solid #d2691e;border-radius:5px}}
+.btn{{background:#d2691e;color:#fff;border:0;padding:10px 20px;cursor:pointer;border-radius:5px;font-weight:bold}}
+.btn:hover{{background:#8b4513}}</style></head><body>
+<div class='c'>
+<h1>Admin Panel</h1>
+<div class='form'>
+<h3>Generate API Key</h3>
+<form action='/admin/generate' method='post'>
+<input type='hidden' name='pw' value='{pw}'>
+<input type='email' name='email' placeholder='User email' required>
+<select name='plan'><option value='free'>Free (10/day)</option><option value='pro'>Pro (1000/day)</option><option value='enterprise'>Enterprise (10000/day)</option></select>
+<button class='btn' type='submit'>Generate Key</button>
+</form></div>
+<h3>Users ({len(users)})</h3>
+<table><tr><th>Email</th><th>Plan</th><th>Today</th><th>Total</th><th>Key</th><th>Action</th></tr>
+{user_rows}</table>
+<a href='/admin?pw={pw}' class='btn'>Refresh</a>
+</div></body></html>"""
+
+@app.post("/admin/generate")
+async def admin_generate(email: str = Form(...), plan: str = Form(default="free"), pw: str = Form(...)):
+    if pw != ADMIN_PASSWORD:
+        return {"error": "Invalid password"}
+    
+    api_key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
+    limit_map = {"free": 10, "pro": 1000, "enterprise": 10000}
+    users[api_key] = {
+        "email": email,
+        "plan": plan,
+        "queries_today": 0,
+        "queries": 0,
+        "total_queries": 0,
+        "limit": limit_map.get(plan, 10),
+        "last_reset": datetime.now().date().isoformat(),
+        "created_at": datetime.now().isoformat()
+    }
+    save_users()
+    
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><title>Key Generated</title>
+<style>body{{font-family:Segoe UI;background:#f5e6d3;display:flex;justify-content:center;align-items:center;height:100vh}}
+.c{{background:#fff;padding:30px;border-radius:10px;text-align:center;box-shadow:0 5px 20px rgba(0,0,0,.2);max-width:500px}}
+.key-box{{display:flex;align-items:center;gap:10px;margin:15px 0;justify-content:center}}
+code{{background:#faf5f0;padding:12px 15px;font-size:14px;word-break:break-all;border-radius:5px;flex:1;text-align:left}}
+.copy-btn{{background:#d2691e;color:#fff;border:0;padding:12px 18px;border-radius:5px;cursor:pointer;font-weight:bold;white-space:nowrap;font-size:14px}}
+.copy-btn:hover{{background:#8b4513}}
+.copy-btn.copied{{background:#28a745}}
+.btn{{background:#d2691e;color:#fff;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;margin-top:10px}}
+.btn:hover{{background:#8b4513}}</style></head><body>
+<div class='c'><h2>API Key Generated</h2>
+<p>Email: <strong>{email}</strong></p>
+<p>Plan: <strong>{plan}</strong></p>
+<p>Daily Limit: <strong>{limit_map.get(plan, 10)}</strong></p>
+<div class='key-box'><code id='apikey'>{api_key}</code><button class='copy-btn' id='copyBtn' onclick='copyKey()'>Copy</button></div>
+<p style='color:red;font-size:14px'>Copy this key now! It won't be shown again.</p>
+<a class='btn' href='/admin?pw={pw}'>Back to Admin</a></div>
+<script>
+function copyKey() {{
+    var key = document.getElementById('apikey').innerText;
+    navigator.clipboard.writeText(key).then(function() {{
+        var btn = document.getElementById('copyBtn');
+        btn.innerText = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() {{ btn.innerText = 'Copy'; btn.classList.remove('copied'); }}, 2000);
+    }});
+}}
+</script></body></html>""")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
