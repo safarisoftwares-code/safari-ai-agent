@@ -62,39 +62,61 @@ load_users()
 
 def think(msg, hist=""):
     try:
-        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. You have real-time web access. Answer directly. Keep responses under 3 sentences. Never mention knowledge cutoff."}]
+        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. You are text-only. Keep answers concise. If you need current information, I will provide it."}]
         if hist:
-            for line in hist.split("\n")[-4:]:  # Only last 4 lines for speed
+            for line in hist.split("\n")[-4:]:
                 if line.startswith("U:"): msgs.append({"role": "user", "content": line[2:]})
                 elif line.startswith("S:"): msgs.append({"role": "assistant", "content": line[2:]})
         msgs.append({"role": "user", "content": msg})
         
-        # Quick search for current topics
-        needs_search = any(kw in msg.lower() for kw in [
-            "president", "election", "today", "current", "latest", "news", 
+        # Search for factual/current topics
+        factual_triggers = [
+            "who is", "what is", "when did", "where is", "why did", "how many",
+            "president", "election", "today", "current", "latest", "news",
             "2024", "2025", "2026", "price", "score", "weather", "now",
-            "world", "affairs", "recent", "happening", "hacked", "incident"
-        ])
+            "world", "affairs", "recent", "happening", "hacked", "incident",
+            "usa", "china", "kenya", "uk", "france", "leader", "prime minister",
+            "capital of", "population", "currency", "stock", "bitcoin", "crypto",
+            "where is", "located", "globe", "map"
+        ]
+        
+        needs_search = any(kw in msg.lower() for kw in factual_triggers)
         
         if needs_search:
+            result = ""
             try:
-                query = msg.replace("who is", "").replace("what is", "").replace("current", "").replace("recently", "").strip()
+                query = msg.lower()
+                # Try Wikipedia
                 resp = httpx.get(
                     f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}",
-                    timeout=5,  # Reduced timeout
+                    timeout=5,
                     headers={"User-Agent": "SafariAI/1.0"}
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    result = data.get("extract", "")[:800]  # Less text = faster
-                    msgs.append({"role": "user", "content": f"Data: {result}\n\nAnswer briefly: {msg}"})
-                    r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=250)
-                    return r.choices[0].message.content
+                    result = resp.json().get("extract", "")[:800]
+                
+                # Fallback to DuckDuckGo
+                if not result:
+                    resp2 = httpx.get(
+                        f"https://api.duckduckgo.com/?q={msg}&format=json",
+                        timeout=5
+                    )
+                    d = resp2.json()
+                    result = d.get("Abstract", "") or ""
             except:
                 pass
+            
+            if result:
+                msgs.append({"role": "user", "content": f"Real-time data:\n{result}\n\nAnswer: {msg}"})
         
-        r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=250)
+        r = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=msgs,
+            temperature=0.3,
+            max_tokens=300
+        )
         return r.choices[0].message.content
+        
     except Exception as e:
         return f"Error: {e}"
 
