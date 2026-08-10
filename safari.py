@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from groq import Groq
 import httpx
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "your-groq-key-here")
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -62,13 +62,38 @@ load_users()
 
 def think(msg, hist=""):
     try:
-        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. Keep answers short. If unsure, say so. Never generate harmful, illegal, or unethical content."}]
+        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. You have real-time web access. Answer directly. Keep responses under 3 sentences. Never mention knowledge cutoff."}]
         if hist:
-            for line in hist.split("\n"):
+            for line in hist.split("\n")[-4:]:  # Only last 4 lines for speed
                 if line.startswith("U:"): msgs.append({"role": "user", "content": line[2:]})
                 elif line.startswith("S:"): msgs.append({"role": "assistant", "content": line[2:]})
         msgs.append({"role": "user", "content": msg})
-        r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=400)
+        
+        # Quick search for current topics
+        needs_search = any(kw in msg.lower() for kw in [
+            "president", "election", "today", "current", "latest", "news", 
+            "2024", "2025", "2026", "price", "score", "weather", "now",
+            "world", "affairs", "recent", "happening", "hacked", "incident"
+        ])
+        
+        if needs_search:
+            try:
+                query = msg.replace("who is", "").replace("what is", "").replace("current", "").replace("recently", "").strip()
+                resp = httpx.get(
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}",
+                    timeout=5,  # Reduced timeout
+                    headers={"User-Agent": "SafariAI/1.0"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result = data.get("extract", "")[:800]  # Less text = faster
+                    msgs.append({"role": "user", "content": f"Data: {result}\n\nAnswer briefly: {msg}"})
+                    r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=250)
+                    return r.choices[0].message.content
+            except:
+                pass
+        
+        r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=250)
         return r.choices[0].message.content
     except Exception as e:
         return f"Error: {e}"
