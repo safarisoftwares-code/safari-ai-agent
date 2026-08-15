@@ -205,7 +205,7 @@ def think(msg, hist=""):
                     data = resp.json()
                     result = data.get("extract", "")[:800]  # Less text = faster
                     msgs.append({"role": "user", "content": f"Data: {result}\n\nAnswer briefly: {msg}"})
-                    r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=500)
+                    r = groq_client.chat.completions.create(model="openai/gpt-oss-20b", messages=msgs, temperature=0.3, max_tokens=500)
                     return r.choices[0].message.content
             except httpx.TimeoutException:
                 logger.warning(f"Wikipedia request timed out for query: {query}")
@@ -214,7 +214,7 @@ def think(msg, hist=""):
             except Exception as e:
                 logger.warning(f"Wikipedia search failed for query '{query}': {e}")
         
-        r = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=msgs, temperature=0.3, max_tokens=500)
+        r = groq_client.chat.completions.create(model="openai/gpt-oss-20b", messages=msgs, temperature=0.3, max_tokens=500)
         return r.choices[0].message.content
     except Exception as e:
         logger.error(f"AI response generation failed: {e}")
