@@ -384,8 +384,7 @@ from fastapi.responses import RedirectResponse
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, pw: str = ""):
     if pw != ADMIN_PASSWORD:
-        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title>
-        <link rel="manifest" href="/manifest.json">
+        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title><link rel="manifest" href="/manifest.json">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="manifest" href="/manifest.json">
