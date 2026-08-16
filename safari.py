@@ -340,6 +340,12 @@ async def delete_data(session: str = Form(...)):
         return {"status": "deleted", "message": "Your chat data has been permanently deleted."}
     return {"status": "not_found", "message": "No data found for this session."}
 
+from fastapi.responses import FileResponse
+
+@app.get("/icon.png")
+async def icon():
+    return FileResponse("safari-icon.png", media_type="image/png")
+
 @app.get("/manifest.json")
 async def manifest():
     return {
@@ -352,9 +358,9 @@ async def manifest():
         "description": "Explore Beyond Limits",
         "icons": [
             {
-                "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23d2691e'/><text x='50' y='72' font-size='60' text-anchor='middle'>&#x1F981;</text></svg>",
-                "sizes": "any",
-                "type": "image/svg+xml",
+                "src": "/icon.png",
+                "sizes": "192x192",
+                "type": "image/png",
                 "purpose": "any"
             }
         ]
