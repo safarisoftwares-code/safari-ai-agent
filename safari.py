@@ -340,6 +340,26 @@ async def delete_data(session: str = Form(...)):
         return {"status": "deleted", "message": "Your chat data has been permanently deleted."}
     return {"status": "not_found", "message": "No data found for this session."}
 
+@app.get("/manifest.json")
+async def manifest():
+    return {
+        "name": "Safari AI Agent",
+        "short_name": "SafariAI",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#fffaf5",
+        "theme_color": "#d2691e",
+        "description": "Explore Beyond Limits",
+        "icons": [
+            {
+                "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23d2691e'/><text x='50' y='72' font-size='60' text-anchor='middle'>&#x1F981;</text></svg>",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any"
+            }
+        ]
+    }
+
 @app.get("/health")
 async def health():
     return {
@@ -358,7 +378,10 @@ from fastapi.responses import RedirectResponse
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, pw: str = ""):
     if pw != ADMIN_PASSWORD:
-        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI</title>
+        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
+<link rel="manifest" href="/manifest.json">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5e6d3}
