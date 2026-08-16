@@ -673,6 +673,7 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 24px;border-radius:25px;font-size:14px;opacity:0;transition:opacity .3s;z-index:1000;pointer-events:none}
 .toast.show{opacity:1}
 </style></head><body>
+<a rel="manifest" href="/manifest.json" style="display:none;"></a>
 <div class="c">
 <div class="h"><span style="font-size:32px">&#x1F981;</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
 <div class="tabs-container">
