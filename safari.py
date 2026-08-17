@@ -1246,10 +1246,24 @@ function clearAttachment(){
 }
 
 loadChats();
-// Always start with a fresh chat
-activeChat = null;
-newChat();
-if(!chats[activeChat]){chats[activeChat]={name:'New Chat',messages:[],timestamps:[]};saveChats();}
+if(!activeChat){
+    var chatIds = Object.keys(chats);
+    var existingEmpty = null;
+    for(var i=0;i<chatIds.length;i++){
+        var c = chats[chatIds[i]];
+        if(!c.messages || c.messages.length===0){
+            existingEmpty = chatIds[i];
+            break;
+        }
+    }
+    if(existingEmpty){
+        activeChat = existingEmpty;
+    } else {
+        activeChat = 'chat_' + Date.now();
+        chats[activeChat] = {name:'New Chat',messages:[],timestamps:[]};
+        saveChats();
+    }
+}
 renderTabs();
 renderMessages();
 </script></body></html>"""
