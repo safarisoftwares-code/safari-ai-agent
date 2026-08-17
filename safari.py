@@ -728,25 +728,33 @@ body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display
 .btn-copy.copied{background:#28a745;color:#fff}
 .time-stamp{font-size:10px;color:#999;margin-top:4px;text-align:right;opacity:.7}
 .s .time-stamp{text-align:left}
-.i{display:flex;padding:15px;background:#fff;border-top:1px solid #f0e0d0;gap:10px;align-items:center}
+.i{
+    display:flex;
+    padding:10px;
+    background:#fff;
+    border-top:1px solid #f0e0d0;
+    gap:8px;
+    align-items:center;
+    flex-wrap:wrap;
+}
 .file-preview{
-    padding:6px 15px;
+    display:none;
+    align-items:center;
+    gap:6px;
+    padding:6px 12px;
     background:#fff3e0;
     border-top:1px solid #f0e0d0;
     font-size:12px;
     color:#8b4513;
-    display:flex;
-    align-items:center;
-    gap:6px;
     overflow:hidden;
-    white-space:nowrap;
-    text-overflow:ellipsis;
+    max-width:100%;
     flex-shrink:0;
 }
 .file-preview span{
     overflow:hidden;
     text-overflow:ellipsis;
     white-space:nowrap;
+    min-width:0;
 }
 .clear-attach-btn{
     margin-left:8px;
@@ -770,9 +778,9 @@ body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display
 }
 .attach-btn{display:flex;align-items:center;justify-content:center;width:44px;height:44px;background:#f0e0d0;border-radius:50%;cursor:pointer;font-size:20px;flex-shrink:0;transition:background .3s}
 .attach-btn:hover{background:#e0c8a8}
-#q{flex:1;padding:14px;border:2px solid #e0c8a8;border-radius:30px;font-size:15px;outline:0;resize:none;min-height:48px;max-height:120px;font-family:inherit}
+#q{flex:1;min-width:0;padding:12px;border:2px solid #e0c8a8;border-radius:30px;font-size:15px;outline:0;resize:none;min-height:48px;max-height:120px;font-family:inherit}
 #q:focus{border-color:#d2691e}
-button#askBtn{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30px;cursor:pointer;font-weight:700;white-space:nowrap;transition:background .3s}
+button#askBtn{background:#d2691e;color:#fff;border:0;padding:12px 22px;border-radius:30px;cursor:pointer;font-weight:700;white-space:nowrap;flex-shrink:0;transition:background .3s}
 button#askBtn:hover{background:#8b4513}
 button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 .typing-indicator{display:none;padding:12px 20px;align-items:center;gap:4px}
