@@ -1238,7 +1238,9 @@ function clearAttachment(){
 }
 
 loadChats();
-if(!activeChat) activeChat=Object.keys(chats)[0]||'chat_'+Date.now();
+// Always start with a fresh chat
+activeChat = null;
+newChat();
 if(!chats[activeChat]){chats[activeChat]={name:'New Chat',messages:[],timestamps:[]};saveChats();}
 renderTabs();
 renderMessages();
