@@ -4,10 +4,13 @@ import hashlib
 import time
 import logging
 import urllib.parse
+import io
+from pypdf import PdfReader
+from docx import Document
 from datetime import datetime
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from groq import Groq
 import httpx
 
@@ -30,8 +33,6 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 print(f"DEBUG: GROQ_KEY loaded: {GROQ_API_KEY[:15]}...")
 print(f"DEBUG: ADMIN_PASSWORD loaded: {'YES' if ADMIN_PASSWORD else 'NO'}")
-
-
 # ============================================
 # LOGGING SETUP
 # ============================================
@@ -49,7 +50,7 @@ logger = logging.getLogger("safari_ai")
 # FASTAPI APP SETUP
 # ============================================
 
-app = FastAPI(title="Safari AI Agent", version="1.0.0")
+app = FastAPI(title="Safari AI Agent", version="2.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -66,6 +67,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 users = {}
 chats = {}
 request_counts = {}
+uploaded_files = {}
 LAST_CLEANUP = time.time()
 LAST_REQUEST_CLEANUP = time.time()
 
@@ -172,40 +174,67 @@ load_chats()
 logger.info("Safari AI Agent initialized successfully")
 
 # ============================================
-# CORE AI FUNCTION
+# CORE AI FUNCTION (with document awareness)
 # ============================================
 
-def think(msg, hist=""):
+def think(msg, hist="", session="default"):
     try:
-        msgs = [{"role": "system", "content": "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. Keep responses under 3 sentences. IMPORTANT: If web search data is provided in the conversation, use it to answer accurately. If no data is available and you're uncertain, say 'I don't have that specific information, but I can search if you'd like more details.' Never fabricate news, events, or specific details. Base answers on provided data or your training knowledge, but be honest about gaps."}]
+        msgs = [{
+            "role": "system",
+            "content": (
+                "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. "
+                "Keep responses under 3 sentences. IMPORTANT: If web search data is provided in the conversation, "
+                "use it to answer accurately. If a document is attached, analyze its content and answer "
+                "based on that document when relevant. Never fabricate news, events, or specific details. "
+                "Be honest about gaps."
+            )
+        }]
+
+        # Include uploaded file content if available
+        if session in uploaded_files:
+            file_data = uploaded_files[session]
+            msgs.append({
+                "role": "system",
+                "content": (
+                    f"Attached document '{file_data['filename']}' content:\n"
+                    f"{file_data['content'][:3000]}"
+                )
+            })
+
         if hist:
             for line in hist.split("\n")[-10:]:  # Last 10 lines for better context
-                if line.startswith("U:"): msgs.append({"role": "user", "content": line[2:]})
-                elif line.startswith("S:"): msgs.append({"role": "assistant", "content": line[2:]})
+                if line.startswith("U:"):
+                    msgs.append({"role": "user", "content": line[2:]})
+                elif line.startswith("S:"):
+                    msgs.append({"role": "assistant", "content": line[2:]})
         msgs.append({"role": "user", "content": msg})
-        
+
         # Quick search for current topics
         needs_search = any(kw in msg.lower() for kw in [
-            "president", "election", "today", "current", "latest", "news", 
+            "president", "election", "today", "current", "latest", "news",
             "2024", "2025", "2026", "price", "score", "weather", "now",
             "world", "affairs", "recent", "happening", "hacked", "incident"
         ])
-        
+
         if needs_search:
             try:
                 query = msg.replace("who is", "").replace("what is", "").replace("current", "").replace("recently", "").strip()
-                # Properly URL-encode the query
                 encoded_query = urllib.parse.quote(query.replace(" ", "_"))
                 resp = httpx.get(
                     f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_query}",
-                    timeout=5,  # Reduced timeout
+                    timeout=5,
                     headers={"User-Agent": "SafariAI/1.0"}
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    result = data.get("extract", "")[:800]  # Less text = faster
+                    result = data.get("extract", "")[:800]
                     msgs.append({"role": "user", "content": f"Data: {result}\n\nAnswer briefly: {msg}"})
-                    r = groq_client.chat.completions.create(model="openai/gpt-oss-20b", messages=msgs, temperature=0.3, max_tokens=500)
+                    r = groq_client.chat.completions.create(
+                        model="openai/gpt-oss-20b",
+                        messages=msgs,
+                        temperature=0.3,
+                        max_tokens=500
+                    )
                     return r.choices[0].message.content
             except httpx.TimeoutException:
                 logger.warning(f"Wikipedia request timed out for query: {query}")
@@ -213,13 +242,90 @@ def think(msg, hist=""):
                 logger.warning(f"Wikipedia returned status {e.response.status_code} for query: {query}")
             except Exception as e:
                 logger.warning(f"Wikipedia search failed for query '{query}': {e}")
-        
-        r = groq_client.chat.completions.create(model="openai/gpt-oss-20b", messages=msgs, temperature=0.3, max_tokens=500)
+
+        r = groq_client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=msgs,
+            temperature=0.3,
+            max_tokens=500
+        )
         return r.choices[0].message.content
+
     except Exception as e:
         logger.error(f"AI response generation failed: {e}")
         return "Sorry, I encountered an issue. Please try again in a moment."
 
+# ============================================
+# FILE UPLOAD ENDPOINT
+# ============================================
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), session: str = Form(default="default")):
+    try:
+        content = await file.read()
+        filename = file.filename or "document"
+        lower_name = filename.lower()
+
+        if lower_name.endswith(".pdf"):
+            try:
+                reader = PdfReader(io.BytesIO(content))
+                text = ""
+                for page in reader.pages[:5]:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+                text = text.strip()
+
+                if not text:
+                    import pytesseract
+                    from pdf2image import convert_from_bytes
+                    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                    images = convert_from_bytes(content, first_page=1, last_page=3)
+                    ocr_text = ""
+                    for img in images:
+                        ocr_text += pytesseract.image_to_string(img) + "\n"
+                    text = ocr_text[:5000]
+
+                if not text:
+                    return {"status": "error", "message": "Could not extract text from PDF. It may be a scanned image or contain no text."}
+            except Exception as e:
+                logger.warning(f"PDF extraction failed: {e}")
+                return {"status": "error", "message": "Could not extract text from PDF."}
+
+        elif lower_name.endswith(".docx"):
+            try:
+                doc = Document(io.BytesIO(content))
+                text = "\n".join([p.text for p in doc.paragraphs[:100]])[:5000]
+            except Exception as e:
+                logger.warning(f"DOCX extraction failed: {e}")
+                return {"status": "error", "message": "Could not extract text from Word document."}
+
+        else:
+            text = content.decode("utf-8", errors="ignore")[:5000]
+
+        if not text.strip():
+            return {"status": "error", "message": "Could not read text from this file."}
+
+        if session not in chats:
+            chats[session] = []
+
+        uploaded_files[session] = {"filename": filename, "content": text}
+
+        chats[session].append(f"U:[Attached file: {filename}]")
+        chats[session].append(f"S:📄 I have received '{filename}'. What would you like me to do with it?")
+
+        save_chats()
+        logger.info(f"File uploaded: {filename} for session {session}")
+
+        return {
+            "status": "success",
+            "filename": filename,
+            "preview": text[:300],
+            "message": f"📄 '{filename}' attached successfully!"
+        }
+    except Exception as e:
+        logger.error(f"File upload failed: {e}")
+        return {"status": "error", "message": "Could not process file."}
     # ============================================
 # API ENDPOINTS
 # ============================================
@@ -229,10 +335,10 @@ async def register(email: str = Form(...)):
     # Validate email format
     if "@" not in email or "." not in email or len(email) > 100:
         raise HTTPException(status_code=400, detail="Invalid email format")
-    
+
     key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
     today = datetime.now().date().isoformat()
-    
+
     users[key] = {
         "email": email,
         "plan": "free",
@@ -248,6 +354,7 @@ async def register(email: str = Form(...)):
     logger.info(f"New user registered: {email} (plan: free)")
     return {"api_key": key, "plan": "free", "limit": 10}
 
+
 @app.post("/ask")
 async def ask(
     question: str = Form(...),
@@ -260,37 +367,37 @@ async def ask(
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     if len(question) > 1000:
         raise HTTPException(status_code=400, detail="Question too long (max 1000 characters)")
-    
+
     # Validate session ID
     if len(session) > 50:
         session = session[:50]
-    
+
     # API key authentication (if provided)
     if api_key:
         if api_key not in users:
             logger.warning(f"Invalid API key attempt: {api_key[:8]}... from session {session}")
             raise HTTPException(status_code=403, detail="Invalid API key")
-        
+
         user = users[api_key]
         today = datetime.now().date().isoformat()
-        
+
         # Reset daily counter if new day
         if user.get("last_reset") != today:
             user["queries_today"] = 0
             user["last_reset"] = today
-        
+
         # Check daily limit
         limit = user.get("limit", 10)
         if user.get("queries_today", 0) >= limit:
             logger.warning(f"User {user['email']} exceeded daily limit ({limit})")
             raise HTTPException(status_code=429, detail=f"Daily limit of {limit} queries reached. Upgrade your plan for more.")
-        
+
         # Increment counters
         user["queries_today"] = user.get("queries_today", 0) + 1
         user["queries"] = user.get("queries", 0) + 1
         user["total_queries"] = user.get("total_queries", 0) + 1
         save_users()
-    
+
     # Rate limiting: 20 requests per minute per session
     now = time.time()
     if session in request_counts:
@@ -301,70 +408,48 @@ async def ask(
     else:
         request_counts[session] = []
     request_counts[session].append(now)
-    
+
     # Periodic cleanup
     cleanup_old_chats()
     cleanup_old_request_counts()
-    
+
     # Get or create chat session
     if session not in chats:
         chats[session] = []
-    
+
     # Build history context
-    hist = "\n".join(chats[session][-6:])
-    
-    # Get AI response
-    resp = think(question, hist)
-    
+    hist = "\n".join(chats[session][-10:])
+
+    # Get AI response (document-aware)
+    resp = think(question, hist, session)
+
     # Store conversation
     chats[session].append(f"U:{question}")
     chats[session].append(f"S:{resp}")
-    
+
     # Limit chat history to 100 messages per session
     if len(chats[session]) > 100:
         chats[session] = chats[session][-100:]
-    
+
     # Persist chats periodically (every 10 messages)
     if len(chats[session]) % 10 == 0:
         save_chats()
-    
+
     logger.info(f"Query processed for session {session}: {question[:50]}...")
     return {"response": resp}
+
 
 @app.post("/delete-data")
 async def delete_data(session: str = Form(...)):
     if session in chats:
         del chats[session]
+        if session in uploaded_files:
+            del uploaded_files[session]
         save_chats()
-        logger.info(f"Chat data deleted for session: {session}")
+        logger.info(f"Chat data and uploaded files deleted for session: {session}")
         return {"status": "deleted", "message": "Your chat data has been permanently deleted."}
     return {"status": "not_found", "message": "No data found for this session."}
 
-from fastapi.responses import FileResponse
-
-@app.get("/icon.png")
-async def icon():
-    return FileResponse("safari-icon.png", media_type="image/png")
-
-@app.get("/manifest.json")
-async def manifest():
-    return {
-        "name": "Safari AI Agent",
-        "short_name": "SafariAI",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#fffaf5",
-        "theme_color": "#d2691e",
-        "description": "Explore Beyond Limits",
-        "icons": [
-            {
-                "src": "/icon.png",
-                "sizes": "192x192",
-                "type": "image/png",
-                "purpose": "any"
-            }
-        ]
-    }
 
 @app.get("/health")
 async def health():
@@ -374,20 +459,14 @@ async def health():
         "active_chats": len(chats),
         "timestamp": datetime.now().isoformat()
     }
-
 # ============================================
 # ADMIN PANEL
 # ============================================
 
-from fastapi.responses import RedirectResponse
-
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, pw: str = ""):
     if pw != ADMIN_PASSWORD:
-        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title><link rel="manifest" href="/manifest.json">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
-<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
-<link rel="manifest" href="/manifest.json">
+        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5e6d3}
@@ -414,8 +493,8 @@ button:hover{background:#8b4513}
 const urlParams=new URLSearchParams(window.location.search);
 if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Invalid password. Please try again.';}
 </script></body></html>"""
-    
-    # Admin panel - password validated, now show dashboard
+
+    # Admin panel – password validated, show dashboard
     user_rows = ""
     for key, user in users.items():
         plan = user.get('plan','free')
@@ -424,7 +503,7 @@ if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Inv
         email = user.get('email','N/A')
         limit = user.get('limit', 10)
         usage_percent = min(100, int((queries_today / limit) * 100)) if limit > 0 else 0
-        
+
         user_rows += f"""<tr>
             <td>{email}</td>
             <td><span class="plan-badge plan-{plan}">{plan.upper()}</span></td>
@@ -439,7 +518,7 @@ if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Inv
                 </form>
             </td>
         </tr>"""
-    
+
     return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Panel - Safari AI</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -518,15 +597,16 @@ tr:hover{{background:#faf5f0}}
 </div>
 </div></body></html>"""
 
+
 @app.post("/admin/generate")
 async def admin_generate(email: str = Form(...), plan: str = Form(default="free"), pw: str = Form(...)):
     if pw != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin password")
-    
+
     api_key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
     limit_map = {"free": 10, "pro": 1000, "enterprise": 10000}
     today = datetime.now().date().isoformat()
-    
+
     users[api_key] = {
         "email": email,
         "plan": plan,
@@ -539,7 +619,7 @@ async def admin_generate(email: str = Form(...), plan: str = Form(default="free"
     }
     save_users()
     logger.info(f"Admin generated API key for {email} (plan: {plan})")
-    
+
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Key Generated - Safari AI</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
@@ -583,32 +663,32 @@ function copyKey() {{
 }}
 </script></body></html>""")
 
+
 @app.post("/admin/revoke")
 async def admin_revoke(key: str = Form(...), pw: str = Form(...)):
     if pw != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin password")
-    
+
     if key in users:
         email = users[key].get("email", "unknown")
         del users[key]
         save_users()
         logger.info(f"Admin revoked API key for {email}")
         return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
-    
+
     logger.warning(f"Admin attempted to revoke non-existent key: {key[:12]}...")
     return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
 
 @app.post("/admin/logout")
 async def admin_logout():
     return RedirectResponse(url="/admin", status_code=303)
-
-# ============================================
-# HTML PAGES
-# ============================================
-
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
+<link rel="manifest" href="/manifest.json">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
@@ -649,6 +729,47 @@ body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display
 .time-stamp{font-size:10px;color:#999;margin-top:4px;text-align:right;opacity:.7}
 .s .time-stamp{text-align:left}
 .i{display:flex;padding:15px;background:#fff;border-top:1px solid #f0e0d0;gap:10px;align-items:center}
+.file-preview{
+    padding:6px 15px;
+    background:#fff3e0;
+    border-top:1px solid #f0e0d0;
+    font-size:12px;
+    color:#8b4513;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+    flex-shrink:0;
+}
+.file-preview span{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+.clear-attach-btn{
+    margin-left:8px;
+    background:#ff6b6b;
+    color:#fff;
+    border:none;
+    border-radius:50%;
+    width:22px;
+    height:22px;
+    cursor:pointer;
+    font-size:12px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+    padding:0;
+    line-height:1;
+}
+.clear-attach-btn:hover{
+    background:#d32f2f;
+}
+.attach-btn{display:flex;align-items:center;justify-content:center;width:44px;height:44px;background:#f0e0d0;border-radius:50%;cursor:pointer;font-size:20px;flex-shrink:0;transition:background .3s}
+.attach-btn:hover{background:#e0c8a8}
 #q{flex:1;padding:14px;border:2px solid #e0c8a8;border-radius:30px;font-size:15px;outline:0;resize:none;min-height:48px;max-height:120px;font-family:inherit}
 #q:focus{border-color:#d2691e}
 button#askBtn{background:#d2691e;color:#fff;border:0;padding:14px 28px;border-radius:30px;cursor:pointer;font-weight:700;white-space:nowrap;transition:background .3s}
@@ -673,7 +794,6 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 24px;border-radius:25px;font-size:14px;opacity:0;transition:opacity .3s;z-index:1000;pointer-events:none}
 .toast.show{opacity:1}
 </style></head><body>
-<a rel="manifest" href="/manifest.json" style="display:none;"></a>
 <div class="c">
 <div class="h"><span style="font-size:32px">&#x1F981;</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
 <div class="tabs-container">
@@ -682,7 +802,16 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 </div>
 <div id="b"></div>
 <div class="typing-indicator" id="typing"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>
-<div class="i"><input id="q" placeholder="Type your question..." autofocus onkeypress="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ask()}"><button id="askBtn" onclick="ask()">Ask</button></div>
+<div class="i">
+<label for="fileInput" class="attach-btn" title="Attach a document">&#128206;</label>
+<div class="file-preview" id="filePreview" style="display:none;">
+    📎 <span id="fileName">file.txt</span>
+    <button type="button" class="clear-attach-btn" onclick="clearAttachment()" title="Remove attachment">✕</button>
+</div>
+<input type="file" id="fileInput" accept=".txt,.md,.csv,.json,.py,.log,.pdf,.docx" style="display:none;" onchange="selectFile(this)">
+<input id="q" placeholder="Type your question or attach a file..." autofocus onkeypress="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ask()}">
+<button id="askBtn" onclick="ask()">Ask</button>
+</div>
 <div class="f">&#169; 2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a> | <a href="/pricing">Pricing</a> | <a href="/admin">Admin</a></div>
 </div>
 <div class="toast" id="toast"></div>
@@ -740,23 +869,19 @@ function renderTabs(){
         var tab=document.createElement('div');
         tab.className='tab'+(id===activeChat?' active':'');
         tab.title='Click to switch | Right-click to rename';
-        
         var nameSpan=document.createElement('span');
         nameSpan.className='tab-name';
         var displayName=chat.name.length>20?chat.name.substring(0,20)+'...':chat.name;
         nameSpan.textContent=displayName;
         tab.appendChild(nameSpan);
-        
         tab.addEventListener('click', function(e) {
             if (e.target.classList.contains('del') || e.target.classList.contains('rename-btn')) return;
             switchChat(id);
         });
-        
         tab.addEventListener('contextmenu', function(e){
             e.preventDefault();
             renameChatTab(id);
         });
-        
         if(chatIds.length>1){
             var renameBtn=document.createElement('span');
             renameBtn.className='rename-btn';
@@ -768,7 +893,6 @@ function renderTabs(){
                 renameChatTab(id);
             });
             tab.appendChild(renameBtn);
-            
             var del=document.createElement('span');
             del.className='del';
             del.innerHTML='&#215;';
@@ -875,30 +999,24 @@ function editMessage(index,msgDiv){
     var chat=chats[activeChat];
     var msg=chat.messages[index];
     var content=msg.substring(2);
-    
     var editDiv=document.createElement('div');
     editDiv.className='m u';
     editDiv.style.width='75%';
-    
     var input=document.createElement('textarea');
     input.className='edit-input';
     input.value=content;
     input.rows=Math.min(5,content.split('\\n').length);
     editDiv.appendChild(input);
-    
     var actions=document.createElement('div');
     actions.className='edit-actions';
-    
     var saveBtn=document.createElement('button');
     saveBtn.className='btn-save';
     saveBtn.textContent='Save';
     saveBtn.onclick=function(){
         var newContent=input.value.trim();
         if(newContent){
-            // Remove the original message and everything after it
             chat.messages=chat.messages.slice(0, index);
             chat.timestamps=chat.timestamps.slice(0, index);
-            // Add the edited message as the new last message
             chat.messages.push('U:'+newContent);
             chat.timestamps.push(Date.now());
             saveChats();
@@ -907,18 +1025,15 @@ function editMessage(index,msgDiv){
             sendEditedMessage(newContent);
         }
     };
-    
     var cancelBtn=document.createElement('button');
     cancelBtn.className='btn-cancel';
     cancelBtn.textContent='Cancel';
     cancelBtn.onclick=function(){
         renderMessages();
     };
-    
     actions.appendChild(saveBtn);
     actions.appendChild(cancelBtn);
     editDiv.appendChild(actions);
-    
     msgDiv.parentElement.replaceChild(editDiv,msgDiv);
     input.focus();
     input.setSelectionRange(input.value.length,input.value.length);
@@ -956,31 +1071,25 @@ function renderMessages(){
     if(!activeChat||!chats[activeChat]) return;
     var msgs=chats[activeChat].messages||[];
     var times=chats[activeChat].timestamps||[];
-    
     if(msgs.length===0){
-        box.innerHTML='<div class="m s" style="max-width:60%">&#x1F981; Hello! Ask me anything!</div>';
+        box.innerHTML='<div class="m s" style="max-width:60%">&#x1F981; Hello! Ask me anything or attach a file!</div>';
     }
-    
     msgs.forEach(function(m,i){
         var wrapper=document.createElement('div');
-        
         if(m.startsWith('U:')){
             wrapper.className='m-wrapper user';
             var msgDiv=document.createElement('div');
             msgDiv.className='m u';
             msgDiv.textContent=m.substring(2);
             wrapper.appendChild(msgDiv);
-            
             var actions=document.createElement('div');
             actions.className='msg-actions';
-            
             var editBtn=document.createElement('button');
             editBtn.className='msg-action-btn btn-edit';
             editBtn.innerHTML='&#9998;';
             editBtn.title='Edit message';
             editBtn.onclick=function(){editMessage(i,msgDiv);};
             actions.appendChild(editBtn);
-            
             wrapper.appendChild(actions);
         }else if(m.startsWith('S:')){
             wrapper.className='m-wrapper bot';
@@ -988,20 +1097,16 @@ function renderMessages(){
             msgDiv2.className='m s';
             msgDiv2.textContent=m.substring(2);
             wrapper.appendChild(msgDiv2);
-            
             var actions2=document.createElement('div');
             actions2.className='msg-actions';
-            
             var copyBtn=document.createElement('button');
             copyBtn.className='msg-action-btn btn-copy';
             copyBtn.innerHTML='&#128203;';
             copyBtn.title='Copy message';
             copyBtn.onclick=function(){copyMessage(m.substring(2),copyBtn);};
             actions2.appendChild(copyBtn);
-            
             wrapper.appendChild(actions2);
         }
-        
         if(times[i]){
             var timeStamp=document.createElement('div');
             timeStamp.className='time-stamp';
@@ -1012,7 +1117,6 @@ function renderMessages(){
                 wrapper.appendChild(timeStamp);
             }
         }
-        
         box.appendChild(wrapper);
     });
     box.scrollTop=box.scrollHeight;
@@ -1035,56 +1139,102 @@ function setProcessing(state){
 
 async function ask(){
     if(isProcessing) return;
-    var input=document.getElementById('q');
-    var question=input.value.trim();
-    if(!question) return;
-    if(question.length>1000){
-        showToast('Message too long. Please keep it under 1000 characters.');
+    var input = document.getElementById('q');
+    var question = input.value.trim();
+    if(!question && !pendingFile) return;
+    if(question.length > 1000){
+        showToast('Message too long.');
         return;
     }
-    if(!activeChat||!chats[activeChat]){
-        newChat();
+    if(!activeChat || !chats[activeChat]) newChat();
+    if(!chats[activeChat].messages) chats[activeChat].messages = [];
+    if(!chats[activeChat].timestamps) chats[activeChat].timestamps = [];
+
+    var displayText = question;
+    if(pendingFile){
+        displayText = question ? question + ' [Attached: ' + pendingFile.name + ']' : '[Attached: ' + pendingFile.name + ']';
     }
-    if(!chats[activeChat].messages) chats[activeChat].messages=[];
-    if(!chats[activeChat].timestamps) chats[activeChat].timestamps=[];
-    
-    chats[activeChat].messages.push('U:'+question);
+    chats[activeChat].messages.push('U:' + displayText);
     chats[activeChat].timestamps.push(Date.now());
-    
-    if(chats[activeChat].name==='New Chat'){
-        chats[activeChat].name=getChatPreview(chats[activeChat].messages);
-    }
     saveChats();
     renderTabs();
     renderMessages();
-    input.value='';
-    input.style.height='auto';
-    
+    input.value = '';
+    var preview = document.getElementById('filePreview');
+    preview.style.display = 'none';
     setProcessing(true);
-    
+
     try{
-        var form=new FormData();
-        form.append('question',question);
-        form.append('session',activeChat);
-        var r=await fetch('/ask',{method:'POST',body:form});
-        if(r.status===429){
-            chats[activeChat].messages.push('S:Warning: Rate limit reached. Please wait a moment before sending another message.');
-            chats[activeChat].timestamps.push(Date.now());
-        }else if(r.status===403){
-            chats[activeChat].messages.push('S:Invalid or expired API key. Please check your credentials.');
-            chats[activeChat].timestamps.push(Date.now());
-        }else{
-            var d=await r.json();
-            chats[activeChat].messages.push('S:'+d.response);
-            chats[activeChat].timestamps.push(Date.now());
-        }
-    }catch(e){
-        chats[activeChat].messages.push('S:Connection error. Please check your internet and try again.');
+        var form = new FormData();
+        form.append('session', activeChat);
+        if(question) form.append('question', question);
+        if(pendingFile) form.append('file', pendingFile);
+
+        if(pendingFile){
+    var uploadForm = new FormData();
+    uploadForm.append('session', activeChat);
+    uploadForm.append('file', pendingFile);
+    if(question) uploadForm.append('question', question);
+
+    var uploadResp = await fetch('/upload', {method:'POST', body:uploadForm});
+    var uploadData = await uploadResp.json();
+
+    if(uploadData.status === 'success'){
+        var askForm = new FormData();
+        askForm.append('session', activeChat);
+        askForm.append('question', question || 'Please analyze the attached file');
+        var askResp = await fetch('/ask', {method:'POST', body:askForm});
+        var askData = await askResp.json();
+        chats[activeChat].messages.push('S:' + askData.response);
+        chats[activeChat].timestamps.push(Date.now());
+    } else {
+        chats[activeChat].messages.push('S:' + (uploadData.message || 'Upload failed.'));
+        chats[activeChat].timestamps.push(Date.now());
+    }
+    pendingFile = null;
+} else {
+    // No file attached — normal message
+    var form = new FormData();
+    form.append('question', question);
+    form.append('session', activeChat);
+    var r = await fetch('/ask', {method:'POST', body:form});
+    var d = await r.json();
+    chats[activeChat].messages.push('S:' + d.response);
+    chats[activeChat].timestamps.push(Date.now());
+}
+    } catch(e){
+        chats[activeChat].messages.push('S:Connection error. Please try again.');
         chats[activeChat].timestamps.push(Date.now());
     }
     saveChats();
     renderMessages();
     setProcessing(false);
+}
+
+let pendingFile = null;
+
+function selectFile(input){
+    var file = input.files[0];
+    if(!file) return;
+    if(file.size > 2 * 1024 * 1024){
+        showToast('File too large. Maximum 2MB.');
+        input.value='';
+        return;
+    }
+    pendingFile = file;
+    var preview = document.getElementById('filePreview');
+    document.getElementById('fileName').textContent = file.name;
+preview.style.display = 'flex';
+    showToast('File ready. Type your question and press Ask.');
+}
+
+function clearAttachment(){
+    pendingFile = null;
+    var input = document.getElementById('fileInput');
+    input.value = '';
+    var preview = document.getElementById('filePreview');
+    preview.style.display = 'none';
+    showToast('Attachment removed.');
 }
 
 loadChats();
@@ -1093,269 +1243,6 @@ if(!chats[activeChat]){chats[activeChat]={name:'New Chat',messages:[],timestamps
 renderTabs();
 renderMessages();
 </script></body></html>"""
-
-@app.get("/terms", response_class=HTMLResponse)
-async def terms():
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Terms of Service - Safari AI</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;padding:20px;color:#333}
-.container{max-width:800px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);padding:40px}
-h1{color:#8b4513;font-size:28px;margin-bottom:10px}
-h2{color:#d2691e;font-size:20px;margin:25px 0 10px}
-p{margin:10px 0;line-height:1.6}
-ul{margin:10px 0 10px 20px;line-height:1.6}
-a{color:#d2691e}
-.back{display:inline-block;margin-top:30px;background:#d2691e;color:#fff;padding:12px 24px;border-radius:30px;text-decoration:none;font-weight:bold}
-.back:hover{background:#8b4513}
-</style></head><body>
-<div class="container">
-<h1>🦁 Terms of Service</h1>
-<p><strong>Last Updated:</strong> August 8, 2026</p>
-
-<h2>1. Acceptance of Terms</h2>
-<p>By accessing or using Safari AI ("the Service"), provided by Safari Softwares ("we," "us," or "our"), you agree to be bound by these Terms of Service. If you do not agree to these terms, please discontinue use of the Service immediately.</p>
-
-<h2>2. Description of Service</h2>
-<p>Safari AI is an AI-powered conversational assistant that uses large language model technology to respond to user queries. The Service is provided for informational and entertainment purposes only.</p>
-
-<h2>3. User Eligibility</h2>
-<p>By using the Service, you represent that you are at least 13 years of age. The Service is not directed at children under 13, and we do not knowingly collect information from children under 13.</p>
-
-<h2>4. User Conduct and Responsibilities</h2>
-<p>You agree not to:</p>
-<ul>
-<li>Use the Service for any illegal, fraudulent, or unauthorized purpose</li>
-<li>Attempt to disrupt, overload, or impair the Service or its servers</li>
-<li>Use the Service to generate, distribute, or promote harmful, abusive, harassing, defamatory, or deceptive content</li>
-<li>Attempt to reverse engineer, decompile, or extract the source code of the Service</li>
-<li>Use automated means (bots, scrapers) to access the Service without permission</li>
-<li>Violate any applicable local, national, or international laws or regulations</li>
-<li>Upload or transmit viruses, malware, or malicious code</li>
-</ul>
-
-<h2>5. Intellectual Property Rights</h2>
-<p>The Safari AI name, logo, branding, interface design, and underlying code are the exclusive intellectual property of Safari Softwares. You are granted a limited, non-exclusive, non-transferable license to use the Service for personal, non-commercial purposes. You may not copy, modify, distribute, sell, or create derivative works from any part of the Service without our express written permission.</p>
-
-<h2>6. User-Generated Content</h2>
-<p>By submitting queries to the Service, you grant us a worldwide, royalty-free license to use, process, and store such content solely for the purpose of providing and improving the Service. You retain ownership of your content but are solely responsible for its legality and appropriateness.</p>
-
-<h2>7. AI-Generated Content Disclaimer</h2>
-<p>Responses generated by Safari AI are produced by artificial intelligence and may contain errors, inaccuracies, biases, or outdated information. The Service should not be relied upon for:</p>
-<ul>
-<li>Medical, legal, financial, or professional advice</li>
-<li>Emergency situations or critical decisions</li>
-<li>Factual verification without independent confirmation</li>
-</ul>
-<p>Always verify important information through authoritative sources.</p>
-
-<h2>8. Third-Party Services</h2>
-<p>The Service utilizes third-party APIs and services, including Groq. We are not responsible for the availability, accuracy, or practices of third-party services. Your use of the Service constitutes acceptance of any applicable third-party terms.</p>
-
-<h2>9. Disclaimer of Warranties</h2>
-<p>THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, RELIABILITY, OR NON-INFRINGEMENT. WE DO NOT WARRANT THAT THE SERVICE WILL BE UNINTERRUPTED, ERROR-FREE, OR SECURE.</p>
-
-<h2>10. Limitation of Liability</h2>
-<p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, SAFARI SOFTWARES SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY DAMAGES ARISING FROM YOUR USE OF OR INABILITY TO USE THE SERVICE, INCLUDING BUT NOT LIMITED TO DAMAGES FOR LOSS OF DATA, PROFITS, OR GOODWILL.</p>
-
-<h2>11. Indemnification</h2>
-<p>You agree to indemnify and hold harmless Safari Softwares and its affiliates from any claims, damages, or expenses arising from your use of the Service or violation of these Terms.</p>
-
-<h2>12. Service Availability</h2>
-<p>We strive to maintain Service availability but do not guarantee uninterrupted access. We reserve the right to modify, suspend, or discontinue the Service at any time without notice.</p>
-
-<h2>13. Rate Limiting</h2>
-<p>To ensure fair usage, the Service employs rate limiting of 20 requests per minute per session. Excessive use may result in temporary or permanent access restrictions.</p>
-
-<h2>14. Termination</h2>
-<p>We reserve the right to terminate or restrict access to the Service for any reason, including violation of these Terms, without prior notice.</p>
-
-<h2>15. Changes to Terms</h2>
-<p>We may modify these Terms at any time. Changes become effective immediately upon posting. Your continued use of the Service after modifications constitutes acceptance of the updated Terms. We encourage periodic review of these Terms.</p>
-
-<h2>16. Governing Law</h2>
-<p>These Terms shall be governed by applicable laws. Any disputes shall be resolved through good-faith negotiations before pursuing other remedies.</p>
-
-<h2>17. Severability</h2>
-<p>If any provision of these Terms is found to be unenforceable, the remaining provisions shall remain in full force and effect.</p>
-
-<h2>18. Contact Information</h2>
-<p>For questions, concerns, or legal notices regarding these Terms, contact:</p>
-<p>📧 <a href="mailto:safari.ai.agent@gmail.com">safari.ai.agent@gmail.com</a></p>
-
-<a href="/" class="back">← Back to Safari AI</a>
-</div></body></html>"""
-
-@app.get("/privacy", response_class=HTMLResponse)
-async def privacy():
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Privacy Policy - Safari AI</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;padding:20px;color:#333}
-.container{max-width:800px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);padding:40px}
-h1{color:#8b4513;font-size:28px;margin-bottom:10px}
-h2{color:#d2691e;font-size:20px;margin:25px 0 10px}
-p{margin:10px 0;line-height:1.6}
-ul{margin:10px 0 10px 20px;line-height:1.6}
-a{color:#d2691e}
-.back{display:inline-block;margin-top:30px;background:#d2691e;color:#fff;padding:12px 24px;border-radius:30px;text-decoration:none;font-weight:bold}
-.back:hover{background:#8b4513}
-</style></head><body>
-<div class="container">
-<h1>🦁 Privacy Policy</h1>
-<p><strong>Last Updated:</strong> August 8, 2026</p>
-
-<h2>1. Introduction</h2>
-<p>Safari Softwares ("we," "us," or "our") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, store, and protect your information when you use Safari AI ("the Service").</p>
-
-<h2>2. Information We Collect</h2>
-<p><strong>2.1 Chat Data:</strong> We process the text queries you submit and the AI-generated responses. This data is temporarily stored in server memory to provide conversational context.</p>
-<p><strong>2.2 Technical Data:</strong> Our servers automatically log standard technical information including IP address, browser type, request timestamps, and access patterns for operational purposes.</p>
-<p><strong>2.3 Local Storage:</strong> The Service stores chat history in your browser's localStorage. This data remains on your device and is not transmitted to us except when you send messages.</p>
-<p><strong>2.4 We Do NOT Collect:</strong> Names, physical addresses, phone numbers, payment information, or social media profiles (unless voluntarily shared in chat messages).</p>
-
-<h2>3. How We Use Information</h2>
-<p>We use collected information exclusively for:</p>
-<ul>
-<li>Processing and responding to your queries</li>
-<li>Maintaining chat context during your session</li>
-<li>Monitoring Service performance and diagnosing technical issues</li>
-<li>Enforcing rate limits and preventing abuse</li>
-<li>Improving the Service based on usage patterns</li>
-</ul>
-
-<h2>4. Data Storage and Retention</h2>
-<p><strong>4.1 Server Storage:</strong> Chat conversations are stored temporarily in server memory (RAM) and are automatically deleted after 24 hours of inactivity or upon server restart.</p>
-<p><strong>4.2 Local Storage:</strong> Chat history stored in your browser's localStorage persists until you clear your browser data or delete chats through the Service interface.</p>
-<p><strong>4.3 No Permanent Database:</strong> We do not maintain a permanent database of user conversations. Data exists only in temporary server memory.</p>
-
-<h2>5. Data Sharing and Disclosure</h2>
-<p><strong>We do NOT:</strong></p>
-<ul>
-<li>Sell, rent, or trade your personal information to third parties</li>
-<li>Share your chat data with advertisers or data brokers</li>
-<li>Use your data for marketing purposes</li>
-</ul>
-<p><strong>Limited Sharing:</strong> Your queries are transmitted to Groq's API for AI processing. Please review <a href="https://groq.com/privacy" target="_blank">Groq's Privacy Policy</a> for their data handling practices.</p>
-<p><strong>Legal Disclosure:</strong> We may disclose information if required by law, court order, or to protect our rights, safety, or property.</p>
-
-<h2>6. Cookies and Tracking</h2>
-<p><strong>6.1 No Advertising Cookies:</strong> Safari AI does not use cookies for advertising, tracking, or analytics purposes.</p>
-<p><strong>6.2 Essential Functionality:</strong> The Service uses browser localStorage solely for saving your chat history and preferences. This is essential for the chat history feature to function.</p>
-<p><strong>6.3 No Cross-Site Tracking:</strong> We do not employ cross-site tracking mechanisms, fingerprinting, or behavioral profiling.</p>
-
-<h2>7. Data Security</h2>
-<p>We implement appropriate technical measures to protect your data:</p>
-<ul>
-<li>Input sanitization to prevent injection attacks</li>
-<li>Rate limiting to prevent abuse</li>
-<li>Automatic data cleanup to minimize data retention</li>
-<li>HTTPS encryption for data transmission</li>
-</ul>
-<p>However, no method of electronic storage or transmission is 100% secure. We cannot guarantee absolute security.</p>
-
-<h2>8. Your Rights and Choices</h2>
-<p>You have the right to:</p>
-<ul>
-<li><strong>Access:</strong> View your chat history through the Service interface</li>
-<li><strong>Delete:</strong> Remove individual chats using the delete function in the interface</li>
-<li><strong>Clear All Data:</strong> Clear your browser's localStorage to remove all locally stored chats</li>
-<li><strong>Request Deletion:</strong> Contact us to request server-side data deletion</li>
-<li><strong>Stop Using:</strong> Discontinue use of the Service at any time</li>
-</ul>
-
-<h2>9. Children's Privacy</h2>
-<p>Safari AI is not intended for children under 13 years of age. We do not knowingly collect or process data from children under 13. If you believe a child has provided us with personal information, please contact us immediately for data removal.</p>
-
-<h2>10. International Data Transfers</h2>
-<p>Your data may be processed in countries where our servers or third-party services operate. By using the Service, you consent to such transfers. We take reasonable steps to ensure data protection regardless of processing location.</p>
-
-<h2>11. Data Breach Procedures</h2>
-<p>In the unlikely event of a data breach, we will take prompt action to investigate, mitigate, and notify affected users if required by applicable law.</p>
-
-<h2>12. Changes to This Policy</h2>
-<p>We may update this Privacy Policy periodically to reflect changes in our practices or legal requirements. Updates will be posted on this page with a revised date. Material changes will be noted prominently.</p>
-
-<h2>13. Contact Us</h2>
-<p>For privacy-related inquiries, data deletion requests, or concerns:</p>
-<p>📧 <a href="mailto:safari.ai.agent@gmail.com">safari.ai.agent@gmail.com</a></p>
-<p>We will respond to legitimate requests within 30 days.</p>
-
-<a href="/" class="back">← Back to Safari AI</a>
-</div></body></html>"""
-
-@app.get("/pricing", response_class=HTMLResponse)
-async def pricing():
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Pricing - Safari AI</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;padding:20px;color:#333}
-.container{max-width:900px;margin:0 auto}
-h1{text-align:center;color:#8b4513;font-size:32px;margin-bottom:10px}
-.subtitle{text-align:center;color:#888;margin-bottom:40px;font-size:16px}
-.plans{display:flex;gap:20px;flex-wrap:wrap;justify-content:center}
-.plan{background:#fff;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:30px;flex:1;min-width:250px;max-width:300px;text-align:center;position:relative;transition:transform .3s}
-.plan:hover{transform:translateY(-5px)}
-.plan.featured{border:3px solid #d2691e;transform:scale(1.05)}
-.plan.featured:hover{transform:scale(1.05) translateY(-5px)}
-.plan-badge{position:absolute;top:-15px;left:50%;transform:translateX(-50%);background:#d2691e;color:#fff;padding:5px 20px;border-radius:20px;font-size:12px;font-weight:bold;text-transform:uppercase}
-.plan h2{color:#8b4513;font-size:24px;margin-bottom:5px}
-.plan .price{font-size:36px;color:#d2691e;font-weight:bold;margin:15px 0}
-.plan .price span{font-size:16px;color:#999}
-.plan ul{list-style:none;margin:20px 0;text-align:left}
-.plan ul li{padding:8px 0;border-bottom:1px solid #f0e0d0;font-size:14px}
-.plan ul li:before{content:'✓ ';color:#28a745;font-weight:bold}
-.btn{display:inline-block;background:#d2691e;color:#fff;padding:12px 30px;border-radius:30px;text-decoration:none;font-weight:bold;margin-top:15px;transition:background .3s}
-.btn:hover{background:#8b4513}
-.back{display:block;text-align:center;margin-top:30px;color:#d2691e;text-decoration:none;font-weight:bold}
-.back:hover{text-decoration:underline}
-</style></head><body>
-<div class="container">
-<h1>🦁 Safari AI Pricing</h1>
-<p class="subtitle">Choose the plan that fits your needs</p>
-<div class="plans">
-<div class="plan">
-<h2>Free</h2>
-<div class="price">$0<span>/month</span></div>
-<ul>
-<li>10 queries per day</li>
-<li>AI chat assistant</li>
-<li>Web search capability</li>
-<li>Chat history (local)</li>
-<li>Basic support</li>
-</ul>
-<a href="/" class="btn">Get Started</a>
-</div>
-<div class="plan featured">
-<div class="plan-badge">Popular</div>
-<h2>Pro</h2>
-<div class="price">$5<span>/1,000 queries</span></div>
-<ul>
-<li>1,000 queries per day</li>
-<li>Priority AI responses</li>
-<li>Advanced web search</li>
-<li>Chat history + export</li>
-<li>API access</li>
-<li>Email support</li>
-</ul>
-<a href="mailto:safari.ai.agent@gmail.com" class="btn">Contact Us</a>
-</div>
-<div class="plan">
-<h2>Enterprise</h2>
-<div class="price">Custom<span></span></div>
-<ul>
-<li>10,000+ queries per day</li>
-<li>Dedicated AI instance</li>
-<li>Custom integrations</li>
-<li>ERP system connectivity</li>
-<li>Priority support</li>
-<li>SLA guarantee</li>
-</ul>
-<a href="mailto:safari.ai.agent@gmail.com" class="btn">Contact Us</a>
-</div>
-</div>
-<a href="/" class="back">← Back to Safari AI</a>
-</div></body></html>"""
 
 # ============================================
 # APP ENTRY POINT
