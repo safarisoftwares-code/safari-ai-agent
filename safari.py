@@ -177,17 +177,40 @@ logger.info("Safari AI Agent initialized successfully")
 # CORE AI FUNCTION (with document awareness)
 # ============================================
 
+def fetch_safari_website():
+    try:
+        resp = httpx.get(
+            "https://safarisoftwares-code.github.io/safari-softwares/",
+            timeout=8,
+            headers={"User-Agent": "SafariAIAgent/2.0"}
+        )
+        if resp.status_code == 200:
+            import re
+            # Remove scripts and styles completely
+            html = re.sub(r'<script[^>]*>.*?</script>', ' ', resp.text, flags=re.DOTALL)
+            html = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL)
+            # Extract text from remaining HTML tags
+            text = re.sub(r'<[^>]+>', ' ', html)
+            text = re.sub(r'\s+', ' ', text)
+            # Look for portfolio/project related terms
+            return text[:4000]
+    except Exception as e:
+        logger.warning(f"Failed to fetch Safari Softwares website: {e}")
+    return ""
+
 def think(msg, hist="", session="default"):
     try:
         msgs = [{
             "role": "system",
             "content": (
-                "You are Safari AI by Safari Softwares. Be helpful, friendly, use emojis. "
-                "Keep responses under 3 sentences. IMPORTANT: If web search data is provided in the conversation, "
-                "use it to answer accurately. If a document is attached, analyze its content and answer "
-                "based on that document when relevant. Never fabricate news, events, or specific details. "
-                "Be honest about gaps."
-            )
+    "CRITICAL IDENTITY RULE: You are Safari AI, created and developed by Safari Softwares. "
+    "If anyone asks who made you, who created you, or who developed you, always answer: "
+    "'I was created by Safari Softwares.' Do NOT mention OpenAI, ChatGPT, or any other company. "
+    "Be helpful, friendly, use emojis. Keep responses under 3 sentences. "
+    "IMPORTANT: If web search data is provided in the conversation, use it to answer accurately. "
+    "If a document is attached, analyze its content and answer based on that document when relevant. "
+    "Never fabricate news, events, or specific details. Be honest about gaps."
+)
         }]
 
         # Include uploaded file content if available
@@ -208,6 +231,20 @@ def think(msg, hist="", session="default"):
                 elif line.startswith("S:"):
                     msgs.append({"role": "assistant", "content": line[2:]})
         msgs.append({"role": "user", "content": msg})
+
+        # Detect questions about Safari Softwares and fetch official site
+        safari_keywords = [
+            "safari softwares", "your work", "your projects", "your company",
+            "who made you", "what do you do", "what other works",
+            "what projects", "your services", "about safari softwares"
+        ]
+        if any(kw in msg.lower() for kw in safari_keywords):
+            site_data = fetch_safari_website()
+            if site_data:
+                msgs.append({
+                    "role": "system",
+                    "content": f"Official Safari Softwares website data:\n{site_data}"
+                })
 
         # Quick search for current topics
         needs_search = any(kw in msg.lower() for kw in [
@@ -941,6 +978,18 @@ function switchChat(id){
 }
 
 function newChat(){
+    // Check if an empty chat already exists
+    var chatIds = Object.keys(chats);
+    for(var i=0;i<chatIds.length;i++){
+        var c = chats[chatIds[i]];
+        if(!c.messages || c.messages.length===0){
+            activeChat = chatIds[i];
+            renderTabs();
+            renderMessages();
+            return;
+        }
+    }
+    // Only create a new one if no empty chat exists
     var id='chat_'+Date.now();
     chats[id]={name:'New Chat',messages:[],timestamps:[]};
     activeChat=id;
