@@ -1,4 +1,12 @@
-﻿import os
+﻿"""
+🦁 Safari AI Lite - Complete SQLite Version
+Copyright (c) 2026 Safari Softwares
+Developer: Safari Softwares
+Email: safarisoftwares@gmail.com
+GitHub: https://github.com/safarisoftwares-code/safari-ai-lite
+"""
+
+import os
 import json
 import hashlib
 import time
@@ -6,6 +14,7 @@ import logging
 import urllib.parse
 import io
 import secrets
+import sqlite3
 from pypdf import PdfReader
 from docx import Document
 from datetime import datetime
@@ -34,6 +43,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 print(f"DEBUG: GROQ_KEY loaded: {GROQ_API_KEY[:15]}...")
 print(f"DEBUG: ADMIN_PASSWORD loaded: {'YES' if ADMIN_PASSWORD else 'NO'}")
+
 # ============================================
 # LOGGING SETUP
 # ============================================
@@ -45,13 +55,13 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger("safari_ai")
+logger = logging.getLogger("safari_ai_lite")
 
 # ============================================
 # FASTAPI APP SETUP
 # ============================================
 
-app = FastAPI(title="Safari AI Agent", version="2.3.0")
+app = FastAPI(title="Safari AI Lite", version="3.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -61,133 +71,252 @@ app.add_middleware(
 )
 
 # ============================================
-# GLOBALS
+# GROQ CLIENT
 # ============================================
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-users = {}
-chats = {}
-request_counts = {}
-uploaded_files = {}
-accounts = {}  # email -> account info
-sessions = {}  # token -> email
-LAST_CLEANUP = time.time()
-LAST_REQUEST_CLEANUP = time.time()
 
 # ============================================
-# PERSISTENCE FUNCTIONS
+# SQLITE DATABASE
 # ============================================
-def load_accounts():
-    global accounts
-    try:
-        with open("accounts.json", "r") as f:
-            accounts = json.load(f)
-        logger.info(f"Loaded {len(accounts)} accounts from accounts.json")
-    except:
-        accounts = {}
 
-def save_accounts():
-    try:
-        with open("accounts.json", "w") as f:
-            json.dump(accounts, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save accounts.json: {e}")
+DB_PATH = "safari_lite.db"
 
-def load_users():
-    global users
-    try:
-        with open("users.json", "r") as f:
-            users = json.load(f)
-        logger.info(f"Loaded {len(users)} users from users.json")
-    except FileNotFoundError:
-        users = {}
-        logger.info("users.json not found, starting with empty users")
-    except json.JSONDecodeError as e:
-        users = {}
-        logger.error(f"Failed to parse users.json: {e}")
-    except Exception as e:
-        users = {}
-        logger.error(f"Unexpected error loading users: {e}")
+def get_db_connection():
+    """Create and return a SQLite database connection."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def save_users():
-    try:
-        with open("users.json", "w") as f:
-            json.dump(users, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save users.json: {e}")
+def init_database():
+    """Initialize all database tables."""
+    conn = get_db_connection()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            email TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            banned INTEGER DEFAULT 0,
+            total_queries INTEGER DEFAULT 0,
+            created_at TEXT
+        );
 
-def load_chats():
-    global chats
-    try:
-        with open("chats.json", "r") as f:
-            chats = json.load(f)
-        logger.info(f"Loaded {len(chats)} chat sessions from chats.json")
-    except FileNotFoundError:
-        chats = {}
-        logger.info("chats.json not found, starting with empty chats")
-    except json.JSONDecodeError as e:
-        chats = {}
-        logger.error(f"Failed to parse chats.json: {e}")
-    except Exception as e:
-        chats = {}
-        logger.error(f"Unexpected error loading chats: {e}")
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            created_at TEXT
+        );
 
-def save_chats():
-    try:
-        with open("chats.json", "w") as f:
-            json.dump(chats, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save chats.json: {e}")
+        CREATE TABLE IF NOT EXISTS api_keys (
+            api_key TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            plan TEXT DEFAULT 'free',
+            queries_today INTEGER DEFAULT 0,
+            total_queries INTEGER DEFAULT 0,
+            limit_per_day INTEGER DEFAULT 10,
+            last_reset TEXT,
+            created_at TEXT
+        );
 
-def load_accounts():
-    global accounts
-    try:
-        with open("accounts.json", "r") as f:
-            accounts = json.load(f)
-        logger.info(f"Loaded {len(accounts)} accounts from accounts.json")
-    except:
-        accounts = {}
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp REAL
+        );
 
-def save_accounts():
-    try:
-        with open("accounts.json", "w") as f:
-            json.dump(accounts, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save accounts.json: {e}")
+        CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(session_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email);
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("SQLite database initialized successfully")
+
+# Initialize database on startup
+init_database()
 
 # ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+def hash_password(password):
+    """Hash a password using SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hashed):
+    """Verify a password against its hash."""
+    return hash_password(password) == hashed
+
+def generate_session_token():
+    """Generate a secure random session token."""
+    return secrets.token_urlsafe(32)
+
+def sanitize_input(text):
+    """Sanitize user input to prevent XSS."""
+    return text.replace("<", "&lt;").replace(">", "&gt;").strip()[:1000]
+
+# ============================================
+# ACCOUNT DATABASE FUNCTIONS
+# ============================================
+
+def db_create_account(name, email, password):
+    """Create a new user account in the database."""
+    conn = get_db_connection()
+    existing = conn.execute("SELECT email FROM accounts WHERE email = ?", (email,)).fetchone()
+    if existing:
+        conn.close()
+        return False, "Account already exists."
+    
+    conn.execute(
+        "INSERT INTO accounts (email, name, password_hash, banned, total_queries, created_at) VALUES (?, ?, ?, 0, 0, ?)",
+        (email, name, hash_password(password), datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return True, "Account created successfully."
+
+def db_get_account(email):
+    """Retrieve account by email."""
+    conn = get_db_connection()
+    account = conn.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    return account
+
+def db_update_account_queries(email):
+    """Increment total query count for an account."""
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET total_queries = total_queries + 1 WHERE email = ?", (email,))
+    conn.commit()
+    conn.close()
+
+def db_ban_account(email):
+    """Ban an account."""
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET banned = 1 WHERE email = ?", (email,))
+    conn.commit()
+    conn.close()
+
+def db_unban_account(email):
+    """Unban an account."""
+    conn = get_db_connection()
+    conn.execute("UPDATE accounts SET banned = 0 WHERE email = ?", (email,))
+    conn.commit()
+    conn.close()
+
+def db_get_all_accounts():
+    """Get all accounts for admin panel."""
+    conn = get_db_connection()
+    accounts = conn.execute("SELECT * FROM accounts ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return accounts
+
+# ============================================
+# SESSION DATABASE FUNCTIONS
+# ============================================
+
+def db_create_session(token, email):
+    """Store a session token."""
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO sessions (token, email, created_at) VALUES (?, ?, ?)",
+        (token, email, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+def db_delete_session(token):
+    """Delete a session token."""
+    conn = get_db_connection()
+    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+# ============================================
+# API KEY DATABASE FUNCTIONS
+# ============================================
+
+def db_create_api_key(email, plan="free"):
+    """Generate and store a new API key."""
+    api_key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
+    limit_map = {"free": 10, "pro": 1000, "enterprise": 10000}
+    
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO api_keys (api_key, email, plan, queries_today, total_queries, limit_per_day, last_reset, created_at) VALUES (?, ?, ?, 0, 0, ?, ?, ?)",
+        (api_key, email, plan, limit_map.get(plan, 10), datetime.now().date().isoformat(), datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return api_key
+
+def db_get_api_key(api_key):
+    """Retrieve API key info."""
+    conn = get_db_connection()
+    key_info = conn.execute("SELECT * FROM api_keys WHERE api_key = ?", (api_key,)).fetchone()
+    conn.close()
+    return key_info
+
+def db_get_all_api_keys():
+    """Get all API keys for admin panel."""
+    conn = get_db_connection()
+    keys = conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return keys
+
+def db_delete_api_key(api_key):
+    """Delete an API key."""
+    conn = get_db_connection()
+    conn.execute("DELETE FROM api_keys WHERE api_key = ?", (api_key,))
+    conn.commit()
+    conn.close()
+
+# ============================================
+# CHAT HISTORY DATABASE FUNCTIONS
+# ============================================
+
+def db_save_chat_message(session_id, role, content):
+    """Save a chat message."""
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO chat_history (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        (session_id, role, content, time.time())
+    )
+    conn.commit()
+    conn.close()
+
+def db_get_chat_history(session_id, limit=20):
+    """Retrieve chat history for a session."""
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT role, content FROM chat_history WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
+        (session_id, limit)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def db_delete_chat_history(session_id):
+    """Delete all chat history for a session."""
+    conn = get_db_connection()
+    conn.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+    # ============================================
 # CLEANUP FUNCTIONS
 # ============================================
 
-def cleanup_old_chats():
-    global chats, LAST_CLEANUP
-    now = time.time()
-    if now - LAST_CLEANUP > 3600:  # Cleanup every hour
-        to_delete = []
-        for session_id in chats:
-            try:
-                if session_id.startswith("chat_"):
-                    chat_time = int(session_id.split("_")[1]) / 1000
-                    if now - chat_time > 86400:  # 24 hours
-                        to_delete.append(session_id)
-            except Exception as e:
-                logger.warning(f"Error parsing session_id {session_id}: {e}")
-        for sid in to_delete:
-            del chats[sid]
-            logger.info(f"Cleaned up expired chat session: {sid}")
-        if to_delete:
-            save_chats()
-        LAST_CLEANUP = now
+request_counts = {}
+LAST_REQUEST_CLEANUP = time.time()
 
 def cleanup_old_request_counts():
+    """Remove stale request timestamps."""
     global request_counts, LAST_REQUEST_CLEANUP
     now = time.time()
-    if now - LAST_REQUEST_CLEANUP > 3600:  # Cleanup every hour
+    if now - LAST_REQUEST_CLEANUP > 3600:
         to_delete = []
         for session in list(request_counts.keys()):
-            # Remove timestamps older than 60 seconds
             request_counts[session] = [t for t in request_counts[session] if now - t < 60]
-            # If no recent requests, mark session for deletion
             if len(request_counts[session]) == 0:
                 to_delete.append(session)
         for sid in to_delete:
@@ -195,33 +324,12 @@ def cleanup_old_request_counts():
             logger.info(f"Cleaned up request counts for session: {sid}")
         LAST_REQUEST_CLEANUP = now
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password, hashed):
-    return hash_password(password) == hashed
-
-def generate_session_token():
-    return secrets.token_urlsafe(32)
-
-def sanitize_input(text):
-    # Remove any potentially harmful characters
-    return text.replace("<", "&lt;").replace(">", "&gt;").strip()[:1000]
-
 # ============================================
-# INITIALIZATION
-# ============================================
-
-load_users()
-load_chats()
-load_accounts()
-logger.info("Safari AI Agent initialized successfully")
-
-# ============================================
-# CORE AI FUNCTION (with document awareness)
+# SAFARI SOFTWARES WEBSITE FETCH
 # ============================================
 
 def fetch_safari_website():
+    """Fetch Safari Softwares website content for portfolio questions."""
     try:
         resp = httpx.get(
             "https://safarisoftwares-code.github.io/safari-softwares/",
@@ -230,49 +338,64 @@ def fetch_safari_website():
         )
         if resp.status_code == 200:
             import re
-            # Remove scripts and styles completely
             html = re.sub(r'<script[^>]*>.*?</script>', ' ', resp.text, flags=re.DOTALL)
             html = re.sub(r'<style[^>]*>.*?</style>', ' ', html, flags=re.DOTALL)
-            # Extract text from remaining HTML tags
             text = re.sub(r'<[^>]+>', ' ', html)
             text = re.sub(r'\s+', ' ', text)
-            # Look for portfolio/project related terms
             return text[:4000]
     except Exception as e:
         logger.warning(f"Failed to fetch Safari Softwares website: {e}")
     return ""
 
+# ============================================
+# CORE AI FUNCTION
+# ============================================
+
+uploaded_files = {}
+
 def think(msg, hist="", session="default"):
+    """Generate AI response with document awareness and web search."""
     try:
         msgs = [{
             "role": "system",
             "content": (
-    "CRITICAL IDENTITY RULE: You are Safari AI, created and developed by Safari Softwares. "
-    "If anyone asks who made you, who created you, or who developed you, always answer: "
-    "'I was created by Safari Softwares.' Do NOT mention OpenAI, ChatGPT, or any other company. "
-    "Be helpful, friendly, and thorough. Use emojis naturally. "
-    "Provide detailed, well-structured answers when the question requires depth. "
-    "Use bullet points, numbered lists, and code blocks when appropriate. "
-    "If the user asks a simple question, keep it brief. If they ask for detail, give it fully. "
-    "CODE-WRITING RULE: When asked to write code, provide ONE clean, complete, production-ready "
-"code block with a short docstring and a single usage example. "
-"Do NOT provide multiple approaches unless the user asks for options. "
-"Avoid unnecessary comments, tables, or verbose explanations. "
-"Only explain deeply if the user explicitly asks for explanation."
-        "CODE-STYLE RULE: "
-"When writing Python code, ALWAYS format it exactly like it appears in a proper editor (VS Code). "
-"Each statement must be on its own line. "
-"Use proper indentation with 4 spaces. "
-"Never use semicolons. Never compress multiple lines into one. "
-"Never use lambda one-liners. "
-"Write clean, readable, PEP 8 compliant code. "
-"For a function, the body should be multiple lines, not single-line if statements. "
-"Include a short docstring and one usage example at the end. "
-"Do NOT provide multiple options, comparison tables, or long explanations."
-    "IMPORTANT: If web search data is provided, use it accurately. "
-    "If a document is attached, analyze its content and answer based on it. "
-    "Never fabricate news, events, or specific details. Be honest about gaps."
-)
+                "IDENTITY RULE: You are Safari AI, developed by Safari Softwares. "
+                "Only mention 'Safari Softwares' when the user directly asks about your creator, developer, or origin. "
+                "In casual conversation, do NOT repeat your identity unnecessarily. "
+                "When asked, vary your phrasing naturally, e.g., 'I was built by Safari Softwares', "
+                "'The team at Safari Softwares developed me', 'Safari Softwares is behind me'. "
+                "Never mention OpenAI, ChatGPT, or any other company. "
+                "HONESTY RULE: Do not claim features that do not exist. "
+                "Safari AI has NO native mobile app in Play Store or App Store, and no 2FA yet. "
+                "However, native apps are planned and coming soon. "
+                "Safari AI IS available as a Progressive Web App (PWA). "
+                "When asked about mobile access, explain this naturally in your own words. "
+                "Key points to mention: (1) no native app yet, (2) Safari Softwares is working on it, "
+                "(3) users can install the PWA via 'Add to Home Screen' or 'Install App' in their browser. "
+                "Vary the wording each time. Do NOT use the same sentence repeatedly. "
+                "Never fabricate features or URLs. "
+                "Be helpful, friendly, and thorough. Use emojis naturally. "
+                "Provide detailed, well-structured answers when the question requires depth. "
+                "Use bullet points, numbered lists, and code blocks when appropriate. "
+                "If the user asks a simple question, keep it brief. If they ask for detail, give it fully. "
+                "CODE-WRITING RULE: When asked to write code, provide ONE clean, complete, production-ready "
+                "code block with a short docstring and a single usage example. "
+                "Do NOT provide multiple approaches unless the user asks for options. "
+                "Avoid unnecessary comments, tables, or verbose explanations. "
+                "Only explain deeply if the user explicitly asks for explanation. "
+                "CODE-STYLE RULE: When writing Python code, ALWAYS format it exactly like it appears in a proper editor (VS Code). "
+                "Each statement must be on its own line. "
+                "Use proper indentation with 4 spaces. "
+                "Never use semicolons. Never compress multiple lines into one. "
+                "Never use lambda one-liners. "
+                "Write clean, readable, PEP 8 compliant code. "
+                "For a function, the body should be multiple lines, not single-line if statements. "
+                "Include a short docstring and one usage example at the end. "
+                "Do NOT provide multiple options, comparison tables, or long explanations. "
+                "IMPORTANT: If web search data is provided, use it accurately. "
+                "If a document is attached, analyze its content and answer based on it. "
+                "Never fabricate news, events, or specific details. Be honest about gaps."
+            )
         }]
 
         # Include uploaded file content if available
@@ -287,7 +410,7 @@ def think(msg, hist="", session="default"):
             })
 
         if hist:
-            for line in hist.split("\n")[-10:]:  # Last 10 lines for better context
+            for line in hist.split("\n")[-10:]:
                 if line.startswith("U:"):
                     msgs.append({"role": "user", "content": line[2:]})
                 elif line.startswith("S:"):
@@ -354,19 +477,27 @@ def think(msg, hist="", session="default"):
         logger.error(f"AI response generation failed: {e}")
         return "Sorry, I encountered an issue. Please try again in a moment."
 
-# ============================================
+    # ============================================
 # FILE UPLOAD ENDPOINT
 # ============================================
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), session: str = Form(default="default")):
+    """
+    Handle file uploads for document analysis.
+    Supports PDF (digital & scanned via OCR), DOCX, and plain text files.
+    """
     try:
         content = await file.read()
         filename = file.filename or "document"
         lower_name = filename.lower()
 
+        # ============================================
+        # PDF HANDLING
+        # ============================================
         if lower_name.endswith(".pdf"):
             try:
+                # Try digital text extraction first
                 reader = PdfReader(io.BytesIO(content))
                 text = ""
                 for page in reader.pages[:5]:
@@ -375,6 +506,7 @@ async def upload_file(file: UploadFile = File(...), session: str = Form(default=
                         text += page_text + "\n"
                 text = text.strip()
 
+                # If no text found, try OCR for scanned PDFs
                 if not text:
                     import pytesseract
                     from pdf2image import convert_from_bytes
@@ -386,11 +518,17 @@ async def upload_file(file: UploadFile = File(...), session: str = Form(default=
                     text = ocr_text[:5000]
 
                 if not text:
-                    return {"status": "error", "message": "Could not extract text from PDF. It may be a scanned image or contain no text."}
+                    return {
+                        "status": "error",
+                        "message": "Could not extract text from PDF. It may be a scanned image or contain no text."
+                    }
             except Exception as e:
                 logger.warning(f"PDF extraction failed: {e}")
                 return {"status": "error", "message": "Could not extract text from PDF."}
 
+        # ============================================
+        # DOCX HANDLING
+        # ============================================
         elif lower_name.endswith(".docx"):
             try:
                 doc = Document(io.BytesIO(content))
@@ -399,21 +537,22 @@ async def upload_file(file: UploadFile = File(...), session: str = Form(default=
                 logger.warning(f"DOCX extraction failed: {e}")
                 return {"status": "error", "message": "Could not extract text from Word document."}
 
+        # ============================================
+        # PLAIN TEXT HANDLING
+        # ============================================
         else:
             text = content.decode("utf-8", errors="ignore")[:5000]
 
         if not text.strip():
             return {"status": "error", "message": "Could not read text from this file."}
 
-        if session not in chats:
-            chats[session] = []
-
+        # Store uploaded file content in memory for AI analysis
         uploaded_files[session] = {"filename": filename, "content": text}
 
-        chats[session].append(f"U:[Attached file: {filename}]")
-        chats[session].append(f"S:📄 I have received '{filename}'. What would you like me to do with it?")
+        # Save attachment notification to chat history
+        db_save_chat_message(session, "user", f"[Attached file: {filename}]")
+        db_save_chat_message(session, "assistant", f"📄 I have received '{filename}'. What would you like me to do with it?")
 
-        save_chats()
         logger.info(f"File uploaded: {filename} for session {session}")
 
         return {
@@ -425,80 +564,88 @@ async def upload_file(file: UploadFile = File(...), session: str = Form(default=
     except Exception as e:
         logger.error(f"File upload failed: {e}")
         return {"status": "error", "message": "Could not process file."}
+
     # ============================================
-# API ENDPOINTS
+# AUTHENTICATION ENDPOINTS
 # ============================================
-
-@app.post("/register")
-async def register(email: str = Form(...)):
-    # Validate email format
-    if "@" not in email or "." not in email or len(email) > 100:
-        raise HTTPException(status_code=400, detail="Invalid email format")
-
-    key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
-    today = datetime.now().date().isoformat()
-
-    users[key] = {
-        "email": email,
-        "plan": "free",
-        "queries": 0,
-        "queries_today": 0,
-        "total_queries": 0,
-        "limit": 10,
-        "last_reset": today,
-        "date": today,
-        "created_at": datetime.now().isoformat()
-    }
-    save_users()
-    logger.info(f"New user registered: {email} (plan: free)")
-    return {"api_key": key, "plan": "free", "limit": 10}
 
 @app.post("/signup")
 async def signup(name: str = Form(...), email: str = Form(...), password: str = Form(...)):
-    if "@" not in email or len(password) < 4:
-        return {"status": "error", "message": "Invalid email or password too short."}
-    if email in accounts:
+    """
+    Register a new user account.
+    Validates email format and password length.
+    Creates account in SQLite and generates a session token.
+    """
+    # Validate email format
+    if "@" not in email or "." not in email or len(email) > 100:
+        return {"status": "error", "message": "Invalid email format."}
+
+    # Validate password length
+    if len(password) < 4:
+        return {"status": "error", "message": "Password must be at least 4 characters."}
+
+    # Validate name
+    if not name or len(name.strip()) < 2:
+        return {"status": "error", "message": "Name must be at least 2 characters."}
+
+    # Check if account already exists
+    existing = db_get_account(email)
+    if existing:
         return {"status": "error", "message": "Account already exists."}
 
-    accounts[email] = {
-        "name": name,
-        "email": email,
-        "password_hash": hash_password(password),
-        "created_at": datetime.now().isoformat(),
-        "banned": False,
-        "total_queries": 0
-    }
+    # Create account
+    success, message = db_create_account(name.strip(), email.strip().lower(), password)
+    if not success:
+        return {"status": "error", "message": message}
 
+    # Generate session token
     token = generate_session_token()
-    sessions[token] = email
-    save_accounts()
+    db_create_session(token, email.strip().lower())
+
+    logger.info(f"New account created: {email}")
+
     return {
         "status": "success",
-        "name": name,
-        "email": email,
+        "name": name.strip(),
+        "email": email.strip().lower(),
         "token": token,
         "message": "Account created successfully!"
-        
     }
 
 
 @app.post("/login")
 async def login(email: str = Form(...), password: str = Form(...)):
-    account = accounts.get(email)
+    """
+    Authenticate a user and create a session.
+    Checks if account exists, is not banned, and password is correct.
+    """
+    # Validate email format
+    if "@" not in email or "." not in email:
+        return {"status": "error", "message": "Invalid email format."}
+
+    # Get account from database
+    account = db_get_account(email.strip().lower())
     if not account:
         return {"status": "error", "message": "Account not found."}
-    if account.get("banned"):
+
+    # Check if banned
+    if account["banned"]:
         return {"status": "error", "message": "Account suspended. Contact Safari Softwares."}
+
+    # Verify password
     if not verify_password(password, account["password_hash"]):
         return {"status": "error", "message": "Incorrect password."}
 
+    # Generate session token
     token = generate_session_token()
-    sessions[token] = email
-    save_accounts()
+    db_create_session(token, email.strip().lower())
+
+    logger.info(f"User logged in: {email}")
+
     return {
         "status": "success",
         "name": account["name"],
-        "email": email,
+        "email": email.strip().lower(),
         "token": token,
         "message": "Logged in successfully!"
     }
@@ -506,10 +653,18 @@ async def login(email: str = Form(...), password: str = Form(...)):
 
 @app.post("/logout")
 async def logout(token: str = Form(...)):
-    if token in sessions:
-        del sessions[token]
+    """
+    End a user session by deleting the token.
+    """
+    if token:
+        db_delete_session(token)
+        logger.info("User logged out")
         return {"status": "success", "message": "Logged out."}
     return {"status": "error", "message": "Invalid session."}
+
+# ============================================
+# ASK ENDPOINT (with SQLite chat history)
+# ============================================
 
 @app.post("/ask")
 async def ask(
@@ -517,6 +672,15 @@ async def ask(
     session: str = Form(default="default"),
     api_key: str = Form(default=None)
 ):
+    """
+    Process user questions.
+    - Validates input
+    - Optional API key authentication with daily limits
+    - Rate limiting per session
+    - Loads chat history from SQLite
+    - Generates AI response
+    - Saves conversation to SQLite
+    """
     # Input validation
     question = sanitize_input(question)
     if not question or len(question) < 1:
@@ -530,33 +694,37 @@ async def ask(
 
     # API key authentication (if provided)
     if api_key:
-        if api_key not in users:
+        key_info = db_get_api_key(api_key)
+        if not key_info:
             logger.warning(f"Invalid API key attempt: {api_key[:8]}... from session {session}")
             raise HTTPException(status_code=403, detail="Invalid API key")
 
-        user = users[api_key]
         today = datetime.now().date().isoformat()
 
         # Reset daily counter if new day
-        if user.get("last_reset") != today:
-            user["queries_today"] = 0
-            user["last_reset"] = today
+        if key_info["last_reset"] != today:
+            conn = get_db_connection()
+            conn.execute(
+                "UPDATE api_keys SET queries_today = 0, last_reset = ? WHERE api_key = ?",
+                (today, api_key)
+            )
+            conn.commit()
+            conn.close()
 
         # Check daily limit
-        limit = user.get("limit", 10)
-        if user.get("queries_today", 0) >= limit:
-            logger.warning(f"User {user['email']} exceeded daily limit ({limit})")
+        limit = key_info["limit_per_day"]
+        if key_info["queries_today"] >= limit:
+            logger.warning(f"API key {api_key[:8]}... exceeded daily limit ({limit})")
             raise HTTPException(status_code=429, detail=f"Daily limit of {limit} queries reached. Upgrade your plan for more.")
 
         # Increment counters
-        user["queries_today"] = user.get("queries_today", 0) + 1
-        user["queries"] = user.get("queries", 0) + 1
-        user["total_queries"] = user.get("total_queries", 0) + 1
-        save_users()
-
-            # If user is logged in, track query
-    if api_key in accounts:
-        accounts[api_key]["total_queries"] = accounts[api_key].get("total_queries", 0) + 1
+        conn = get_db_connection()
+        conn.execute(
+            "UPDATE api_keys SET queries_today = queries_today + 1, total_queries = total_queries + 1 WHERE api_key = ?",
+            (api_key,)
+        )
+        conn.commit()
+        conn.close()
 
     # Rate limiting: 20 requests per minute per session
     now = time.time()
@@ -570,63 +738,52 @@ async def ask(
     request_counts[session].append(now)
 
     # Periodic cleanup
-    cleanup_old_chats()
     cleanup_old_request_counts()
 
-    # Get or create chat session
-    if session not in chats:
-        chats[session] = []
+    # Load chat history from SQLite
+    rows = db_get_chat_history(session, limit=10)
+    hist_lines = []
+    for row in reversed(rows):
+        prefix = "U:" if row["role"] == "user" else "S:"
+        hist_lines.append(f"{prefix}{row['content']}")
+    hist = "\n".join(hist_lines)
 
-    # Build history context
-    hist = "\n".join(chats[session][-10:])
-
-    # Get AI response (document-aware)
+    # Generate AI response
     resp = think(question, hist, session)
 
-    # Store conversation
-    chats[session].append(f"U:{question}")
-    chats[session].append(f"S:{resp}")
-
-    # Limit chat history to 100 messages per session
-    if len(chats[session]) > 100:
-        chats[session] = chats[session][-100:]
-
-    # Persist chats periodically (every 10 messages)
-    if len(chats[session]) % 10 == 0:
-        save_chats()
+    # Save conversation to SQLite
+    db_save_chat_message(session, "user", question)
+    db_save_chat_message(session, "assistant", resp)
 
     logger.info(f"Query processed for session {session}: {question[:50]}...")
     return {"response": resp}
 
 
+# ============================================
+# DELETE DATA ENDPOINT
+# ============================================
+
 @app.post("/delete-data")
 async def delete_data(session: str = Form(...)):
-    if session in chats:
-        del chats[session]
-        if session in uploaded_files:
-            del uploaded_files[session]
-        save_chats()
-        logger.info(f"Chat data and uploaded files deleted for session: {session}")
-        return {"status": "deleted", "message": "Your chat data has been permanently deleted."}
-    return {"status": "not_found", "message": "No data found for this session."}
+    """
+    Delete all chat history for a session.
+    Also removes uploaded files from memory.
+    """
+    db_delete_chat_history(session)
+    if session in uploaded_files:
+        del uploaded_files[session]
+    logger.info(f"Chat data deleted for session: {session}")
+    return {"status": "deleted", "message": "Your chat data has been permanently deleted."}
 
-
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "users": len(users),
-        "active_chats": len(chats),
-        "timestamp": datetime.now().isoformat()
-    }
 # ============================================
-# ADMIN PANEL
+# ADMIN PANEL - LOGIN PAGE
 # ============================================
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, pw: str = ""):
+    """Admin dashboard with login protection."""
     if pw != ADMIN_PASSWORD:
-        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI</title>
+        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI Lite</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5e6d3}
@@ -642,7 +799,7 @@ button:hover{background:#8b4513}
 .back:hover{text-decoration:underline}
 </style></head><body>
 <form method="get" action="/admin">
-<h2>Safari AI Admin</h2>
+<h2>🦁 Safari AI Lite Admin</h2>
 <p class="error" id="error"></p>
 <label for="pw">Admin Password</label>
 <input type="password" id="pw" name="pw" placeholder="Enter password" required>
@@ -654,14 +811,23 @@ const urlParams=new URLSearchParams(window.location.search);
 if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Invalid password. Please try again.';}
 </script></body></html>"""
 
-    # Admin panel – password validated, show dashboard
+    # ============================================
+    # ADMIN DASHBOARD
+    # ============================================
+
+    # Get accounts from SQLite
+    accounts = db_get_all_accounts()
     account_rows = ""
-    for email, acc in accounts.items():
-        name = acc.get("name","N/A")
-        total = acc.get("total_queries",0)
-        banned = acc.get("banned", False)
+    for acc in accounts:
+        name = acc["name"]
+        email = acc["email"]
+        total = acc["total_queries"]
+        banned = acc["banned"]
         status = "🔴 Banned" if banned else "🟢 Active"
-        action = f'<a href="/admin/unban?email={email}&pw={pw}" class="btn-revoke">Unban</a>' if banned else f'<a href="/admin/ban?email={email}&pw={pw}" class="btn-revoke">Ban</a>'
+        if banned:
+            action = f'<a href="/admin/unban?email={email}&pw={pw}" class="btn-unban">Unban</a>'
+        else:
+            action = f'<a href="/admin/ban?email={email}&pw={pw}" class="btn-ban">Ban</a>'
         account_rows += f"""<tr>
             <td>{name}</td>
             <td>{email}</td>
@@ -670,31 +836,34 @@ if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Inv
             <td>{action}</td>
         </tr>"""
 
+    # Get API keys from SQLite
+    api_keys = db_get_all_api_keys()
     user_rows = ""
-    for key, user in users.items():
-        plan = user.get('plan','free')
-        queries_today = user.get('queries_today', user.get('queries', 0))
-        total_queries = user.get('total_queries', 0)
-        email = user.get('email','N/A')
-        limit = user.get('limit', 10)
+    for key in api_keys:
+        email = key["email"]
+        plan = key["plan"]
+        queries_today = key["queries_today"]
+        total_queries = key["total_queries"]
+        limit = key["limit_per_day"]
         usage_percent = min(100, int((queries_today / limit) * 100)) if limit > 0 else 0
+        api_key_short = key["api_key"][:12]
 
         user_rows += f"""<tr>
             <td>{email}</td>
             <td><span class="plan-badge plan-{plan}">{plan.upper()}</span></td>
             <td>{queries_today} / {limit} <div class="usage-bar"><div class="usage-fill" style="width:{usage_percent}%"></div></div></td>
             <td>{total_queries}</td>
-            <td><code>{key[:12]}...</code></td>
+            <td><code>{api_key_short}...</code></td>
             <td>
                 <form method="post" action="/admin/revoke" style="display:inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
-                    <input type="hidden" name="key" value="{key}">
+                    <input type="hidden" name="key" value="{key['api_key']}">
                     <input type="hidden" name="pw" value="{pw}">
                     <button type="submit" class="btn-revoke">Revoke</button>
                 </form>
             </td>
         </tr>"""
 
-    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Panel - Safari AI</title>
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Panel - Safari AI Lite</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:Segoe UI,sans-serif;background:#f5e6d3;padding:20px;min-height:100vh}}
@@ -718,6 +887,10 @@ tr:hover{{background:#faf5f0}}
 .btn:hover{{background:#8b4513}}
 .btn-revoke{{background:#d32f2f;color:#fff;border:0;padding:6px 14px;cursor:pointer;border-radius:6px;font-size:13px;font-weight:bold;transition:background .3s}}
 .btn-revoke:hover{{background:#b71c1c}}
+.btn-ban{{background:#d32f2f;color:#fff;border:0;padding:6px 14px;cursor:pointer;border-radius:6px;font-size:13px;font-weight:bold;text-decoration:none;display:inline-block}}
+.btn-ban:hover{{background:#b71c1c}}
+.btn-unban{{background:#28a745;color:#fff;border:0;padding:6px 14px;cursor:pointer;border-radius:6px;font-size:13px;font-weight:bold;text-decoration:none;display:inline-block}}
+.btn-unban:hover{{background:#218838}}
 .btn-logout{{background:#555;color:#fff;border:0;padding:8px 16px;cursor:pointer;border-radius:6px;font-size:13px;text-decoration:none;display:inline-block;transition:background .3s}}
 .btn-logout:hover{{background:#333}}
 .plan-badge{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:bold;letter-spacing:1px}}
@@ -731,15 +904,14 @@ tr:hover{{background:#faf5f0}}
 </style></head><body>
 <div class="c">
 <div class="header-row">
-<div><h1>Admin Panel</h1><p class="subtitle">Safari AI Agent - User & API Key Management</p></div>
+<div><h1>Admin Panel</h1><p class="subtitle">Safari AI Lite - User & API Key Management</p></div>
 <a href="/" class="btn-logout">Exit Admin</a>
 </div>
 
 <div class="stats">
-<div class="stat-card"><h3>Total Users</h3><div class="num">{len(users)}</div></div>
-<div class="stat-card"><h3>Free Users</h3><div class="num">{sum(1 for u in users.values() if u.get('plan')=='free')}</div></div>
-<div class="stat-card"><h3>Pro Users</h3><div class="num">{sum(1 for u in users.values() if u.get('plan')=='pro')}</div></div>
-<div class="stat-card"><h3>Enterprise</h3><div class="num">{sum(1 for u in users.values() if u.get('plan')=='enterprise')}</div></div>
+<div class="stat-card"><h3>Login Accounts</h3><div class="num">{len(accounts)}</div></div>
+<div class="stat-card"><h3>API Keys</h3><div class="num">{len(api_keys)}</div></div>
+<div class="stat-card"><h3>Banned</h3><div class="num">{sum(1 for a in accounts if a['banned'])}</div></div>
 </div>
 
 <div class="form">
@@ -764,7 +936,7 @@ tr:hover{{background:#faf5f0}}
 {account_rows}
 </table>
 
-<h3 style="color:#8b4513;margin-top:25px">Registered Users</h3>
+<h3 style="color:#8b4513;margin-top:25px">API Key Users</h3>
 <table>
 <tr><th>Email</th><th>Plan</th><th>Usage Today</th><th>Total Queries</th><th>API Key</th><th>Action</th></tr>
 {user_rows}
@@ -778,30 +950,22 @@ tr:hover{{background:#faf5f0}}
 </div>
 </div></body></html>"""
 
+# ============================================
+# ADMIN - GENERATE API KEY
+# ============================================
 
 @app.post("/admin/generate")
 async def admin_generate(email: str = Form(...), plan: str = Form(default="free"), pw: str = Form(...)):
+    """Generate a new API key for a user."""
     if pw != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin password")
 
-    api_key = hashlib.sha256(f"{email}{time.time()}".encode()).hexdigest()[:32]
+    api_key = db_create_api_key(email, plan)
     limit_map = {"free": 10, "pro": 1000, "enterprise": 10000}
-    today = datetime.now().date().isoformat()
 
-    users[api_key] = {
-        "email": email,
-        "plan": plan,
-        "queries_today": 0,
-        "queries": 0,
-        "total_queries": 0,
-        "limit": limit_map.get(plan, 10),
-        "last_reset": today,
-        "created_at": datetime.now().isoformat()
-    }
-    save_users()
     logger.info(f"Admin generated API key for {email} (plan: {plan})")
 
-    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Key Generated - Safari AI</title>
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Key Generated - Safari AI Lite</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:Segoe UI,sans-serif;background:#f5e6d3;display:flex;justify-content:center;align-items:center;height:100vh;padding:20px}}
@@ -821,7 +985,7 @@ code{{background:#faf5f0;padding:14px 15px;font-size:14px;word-break:break-all;b
 .btn:hover{{background:#8b4513}}
 </style></head><body>
 <div class='c'>
-<h2>API Key Generated</h2>
+<h2>🦁 API Key Generated</h2>
 <p class="detail">New credentials created successfully</p>
 <div class='info'>
 <p><strong>Email:</strong> {email}</p>
@@ -845,50 +1009,91 @@ function copyKey() {{
 </script></body></html>""")
 
 
+# ============================================
+# ADMIN - REVOKE API KEY
+# ============================================
+
 @app.post("/admin/revoke")
 async def admin_revoke(key: str = Form(...), pw: str = Form(...)):
+    """Revoke an API key."""
     if pw != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin password")
 
-    if key in users:
-        email = users[key].get("email", "unknown")
-        del users[key]
-        save_users()
-        logger.info(f"Admin revoked API key for {email}")
-        return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+    db_delete_api_key(key)
+    logger.info(f"Admin revoked API key: {key[:12]}...")
 
-    logger.warning(f"Admin attempted to revoke non-existent key: {key[:12]}...")
     return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+
+# ============================================
+# ADMIN - BAN ACCOUNT
+# ============================================
 
 @app.get("/admin/ban")
 async def admin_ban(email: str = "", pw: str = ""):
+    """Ban a login account."""
     if pw != ADMIN_PASSWORD:
         return {"error": "Invalid password"}
-    if email in accounts:
-        accounts[email]["banned"] = True
-        save_accounts()
-        logger.info(f"Admin banned account: {email}")
-        return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+    db_ban_account(email)
+    logger.info(f"Admin banned account: {email}")
+
     return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+
+# ============================================
+# ADMIN - UNBAN ACCOUNT
+# ============================================
 
 @app.get("/admin/unban")
 async def admin_unban(email: str = "", pw: str = ""):
+    """Unban a login account."""
     if pw != ADMIN_PASSWORD:
         return {"error": "Invalid password"}
-    if email in accounts:
-        accounts[email]["banned"] = False
-        save_accounts()
-        logger.info(f"Admin unbanned account: {email}")
-        return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+    db_unban_account(email)
+    logger.info(f"Admin unbanned account: {email}")
+
     return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+
+# ============================================
+# ADMIN - LOGOUT
+# ============================================
 
 @app.post("/admin/logout")
 async def admin_logout():
+    """Logout from admin panel."""
     return RedirectResponse(url="/admin", status_code=303)
+
+# ============================================
+# HEALTH CHECK
+# ============================================
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    conn = get_db_connection()
+    account_count = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+    chat_count = conn.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0]
+    conn.close()
+
+    return {
+        "status": "ok",
+        "accounts": account_count,
+        "chat_messages": chat_count,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ============================================
+# LOGIN PAGE
+# ============================================
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Login - Safari AI</title>
+    """Login and signup page."""
+    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Login - Safari AI Lite</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
@@ -908,9 +1113,12 @@ button:hover{background:#8b4513}
 .msg.success{color:#2e7d32;display:block}
 .back{display:block;text-align:center;margin-top:15px;color:#d2691e;text-decoration:none;font-size:14px}
 .back:hover{text-decoration:underline}
+.password-wrapper{position:relative}
+.password-wrapper input{padding-right:40px}
+.eye-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;padding:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center}
 </style></head><body>
 <div class="c">
-<h1>&#x1F981; Safari AI</h1>
+<h1>🦁 Safari AI Lite</h1>
 <p>Login or create an account</p>
 <div class="tab-row">
 <button class="tab-btn active" id="loginTab" onclick="showLogin()">Login</button>
@@ -920,9 +1128,9 @@ button:hover{background:#8b4513}
 <label for="loginEmail">Email</label>
 <input type="email" id="loginEmail" placeholder="you@example.com" required>
 <label for="loginPassword">Password</label>
-<div style="position:relative;">
-    <input type="password" id="loginPassword" placeholder="Enter password" required style="padding-right:45px;">
-    <button type="button" onclick="togglePassword('loginPassword', this)" style="position:absolute;right:5px;top:37%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;width:auto;padding:5px;">👁️</button>
+<div class="password-wrapper">
+    <input type="password" id="loginPassword" placeholder="Enter password" required>
+    <button type="button" class="eye-btn" onclick="togglePassword('loginPassword', this)">👁️</button>
 </div>
 <button type="submit">Login</button>
 </form>
@@ -932,9 +1140,9 @@ button:hover{background:#8b4513}
 <label for="signupEmail">Email</label>
 <input type="email" id="signupEmail" placeholder="you@example.com" required>
 <label for="signupPassword">Password</label>
-<div style="position:relative;">
-    <input type="password" id="signupPassword" placeholder="Minimum 4 characters" required style="padding-right:45px;">
-    <button type="button" onclick="togglePassword('signupPassword', this)" style="position:absolute;right:5px;top:37%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;width:auto;padding:5px;">👁️</button>
+<div class="password-wrapper">
+    <input type="password" id="signupPassword" placeholder="Minimum 4 characters" required>
+    <button type="button" class="eye-btn" onclick="togglePassword('signupPassword', this)">👁️</button>
 </div>
 <button type="submit">Create Account</button>
 </form>
@@ -961,7 +1169,6 @@ function showMsg(text,type){
     m.textContent=text;
     m.className='msg '+type;
 }
-
 function togglePassword(inputId, btn){
     var input = document.getElementById(inputId);
     if(input.type === 'password'){
@@ -972,7 +1179,6 @@ function togglePassword(inputId, btn){
         btn.textContent = '👁️';
     }
 }
-
 document.getElementById('loginForm').addEventListener('submit',async function(e){
     e.preventDefault();
     var email=document.getElementById('loginEmail').value;
@@ -1013,9 +1219,14 @@ document.getElementById('signupForm').addEventListener('submit',async function(e
 });
 </script></body></html>"""
 
+# ============================================
+# MAIN CHAT INTERFACE
+# ============================================
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title>
+    """Main chat page with full functionality."""
+    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Lite - Explore Beyond Limits</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="manifest" href="/manifest.json">
@@ -1023,7 +1234,7 @@ async def home():
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
 .c{background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);width:100%;max-width:800px;height:90vh;display:flex;flex-direction:column;overflow:hidden}
-.h{background:linear-gradient(135deg,#d2691e,#8b4513);color:#fff;padding:20px;display:flex;align-items:center;gap:12px}
+.h{background:linear-gradient(135deg,#d2691e,#8b4513);color:#fff;padding:16px 22px;display:flex;align-items:center;gap:12px}
 .h h1{font-size:20px}.h p{font-size:11px;opacity:.9}
 .tabs-container{display:flex;align-items:center;background:#fff;border-bottom:2px solid #f0e0d0}
 .tabs{display:flex;overflow-x:auto;padding:0 5px;min-height:40px;align-items:flex-end;flex:1;scrollbar-width:none}
@@ -1058,54 +1269,11 @@ body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display
 .btn-copy.copied{background:#28a745;color:#fff}
 .time-stamp{font-size:10px;color:#999;margin-top:4px;text-align:right;opacity:.7}
 .s .time-stamp{text-align:left}
-.i{
-    display:flex;
-    padding:10px;
-    background:#fff;
-    border-top:1px solid #f0e0d0;
-    gap:8px;
-    align-items:center;
-    flex-wrap:wrap;
-}
-.file-preview{
-    display:none;
-    align-items:center;
-    gap:6px;
-    padding:6px 12px;
-    background:#fff3e0;
-    border-top:1px solid #f0e0d0;
-    font-size:12px;
-    color:#8b4513;
-    overflow:hidden;
-    max-width:100%;
-    flex-shrink:0;
-}
-.file-preview span{
-    overflow:hidden;
-    text-overflow:ellipsis;
-    white-space:nowrap;
-    min-width:0;
-}
-.clear-attach-btn{
-    margin-left:8px;
-    background:#ff6b6b;
-    color:#fff;
-    border:none;
-    border-radius:50%;
-    width:22px;
-    height:22px;
-    cursor:pointer;
-    font-size:12px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    flex-shrink:0;
-    padding:0;
-    line-height:1;
-}
-.clear-attach-btn:hover{
-    background:#d32f2f;
-}
+.i{display:flex;padding:10px;background:#fff;border-top:1px solid #f0e0d0;gap:8px;align-items:center;flex-wrap:wrap}
+.file-preview{display:none;align-items:center;gap:6px;padding:6px 12px;background:#fff3e0;border-top:1px solid #f0e0d0;font-size:12px;color:#8b4513;overflow:hidden;max-width:100%;flex-shrink:0}
+.file-preview span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.clear-attach-btn{margin-left:8px;background:#ff6b6b;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;line-height:1}
+.clear-attach-btn:hover{background:#d32f2f}
 .attach-btn{display:flex;align-items:center;justify-content:center;width:44px;height:44px;background:#f0e0d0;border-radius:50%;cursor:pointer;font-size:20px;flex-shrink:0;transition:background .3s}
 .attach-btn:hover{background:#e0c8a8}
 #q{flex:1;min-width:0;padding:12px;border:2px solid #e0c8a8;border-radius:30px;font-size:15px;outline:0;resize:none;min-height:48px;max-height:120px;font-family:inherit}
@@ -1135,7 +1303,7 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 <div class="c">
 <div class="h">
     <span style="font-size:32px">&#x1F981;</span>
-    <div style="flex:1;"><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div>
+    <div style="flex:1;"><h1>Safari AI Lite</h1><p>Explore Beyond Limits</p></div>
     <div id="userArea" style="display:flex;align-items:center;gap:10px;">
         <span id="userName" style="font-size:13px;font-weight:bold;"></span>
         <button id="logoutBtn" onclick="logoutUser()" style="background:#8b4513;color:#fff;border:none;padding:6px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:bold;display:none;">Logout</button>
@@ -1158,7 +1326,7 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 <input id="q" placeholder="Type your question or attach a file..." autofocus onkeypress="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ask()}">
 <button id="askBtn" onclick="ask()">Ask</button>
 </div>
-<div class="f">&#169; 2026 Safari Softwares | <a href="/terms">Terms</a> | <a href="/privacy">Privacy</a> | <a href="/pricing">Pricing</a> | <a href="/admin">Admin</a></div>
+<div class="f">&#169; 2026 Safari Softwares | <a href="/login">Login</a> | <a href="/admin">Admin</a></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
@@ -1200,7 +1368,7 @@ function logoutUser(){
 
 function loadChats(){
     try{
-        var saved=localStorage.getItem('safari_chats');
+        var saved=localStorage.getItem('safari_chats_lite');
         if(saved) chats=JSON.parse(saved);
     }catch(e){ chats = {}; }
     if(!chats || Object.keys(chats).length===0){
@@ -1213,7 +1381,7 @@ function loadChats(){
 
 function saveChats(){
     try{
-        localStorage.setItem('safari_chats',JSON.stringify(chats));
+        localStorage.setItem('safari_chats_lite',JSON.stringify(chats));
     }catch(e){}
 }
 
@@ -1305,7 +1473,6 @@ function switchChat(id){
 }
 
 function newChat(){
-    // Check if an empty chat already exists
     var chatIds = Object.keys(chats);
     for(var i=0;i<chatIds.length;i++){
         var c = chats[chatIds[i]];
@@ -1316,7 +1483,6 @@ function newChat(){
             return;
         }
     }
-    // Only create a new one if no empty chat exists
     var id='chat_'+Date.now();
     chats[id]={name:'New Chat',messages:[],timestamps:[]};
     activeChat=id;
@@ -1343,7 +1509,7 @@ function deleteChat(id){
 function exportChat(){
     if(!activeChat||!chats[activeChat]) return;
     var chat=chats[activeChat];
-    var text='Safari AI Chat Export\\n';
+    var text='Safari AI Lite Chat Export\\n';
     text+='Date: '+new Date().toLocaleString()+'\\n';
     text+='Chat: '+chat.name+'\\n';
     text+='='.repeat(50)+'\\n\\n';
@@ -1361,7 +1527,7 @@ function exportChat(){
     var url=URL.createObjectURL(blob);
     var a=document.createElement('a');
     a.href=url;
-    a.download='safari-ai-chat-'+activeChat+'.txt';
+    a.download='safari-ai-lite-chat-'+activeChat+'.txt';
     a.click();
     URL.revokeObjectURL(url);
     showToast('Chat exported!');
@@ -1430,10 +1596,7 @@ async function sendEditedMessage(question){
         form.append('session',activeChat);
         var r=await fetch('/ask',{method:'POST',body:form});
         if(r.status===429){
-            chats[activeChat].messages.push('S:Warning: Rate limit reached. Please wait a moment.');
-            chats[activeChat].timestamps.push(Date.now());
-        }else if(r.status===403){
-            chats[activeChat].messages.push('S:Invalid or expired API key.');
+            chats[activeChat].messages.push('S:Warning: Rate limit reached.');
             chats[activeChat].timestamps.push(Date.now());
         }else{
             var d=await r.json();
@@ -1550,43 +1713,35 @@ async function ask(){
     setProcessing(true);
 
     try{
-        var form = new FormData();
-        form.append('session', activeChat);
-        if(question) form.append('question', question);
-        if(pendingFile) form.append('file', pendingFile);
-
         if(pendingFile){
-    var uploadForm = new FormData();
-    uploadForm.append('session', activeChat);
-    uploadForm.append('file', pendingFile);
-    if(question) uploadForm.append('question', question);
-
-    var uploadResp = await fetch('/upload', {method:'POST', body:uploadForm});
-    var uploadData = await uploadResp.json();
-
-    if(uploadData.status === 'success'){
-        var askForm = new FormData();
-        askForm.append('session', activeChat);
-        askForm.append('question', question || 'Please analyze the attached file');
-        var askResp = await fetch('/ask', {method:'POST', body:askForm});
-        var askData = await askResp.json();
-        chats[activeChat].messages.push('S:' + askData.response);
-        chats[activeChat].timestamps.push(Date.now());
-    } else {
-        chats[activeChat].messages.push('S:' + (uploadData.message || 'Upload failed.'));
-        chats[activeChat].timestamps.push(Date.now());
-    }
-    pendingFile = null;
-} else {
-    // No file attached — normal message
-    var form = new FormData();
-    form.append('question', question);
-    form.append('session', activeChat);
-    var r = await fetch('/ask', {method:'POST', body:form});
-    var d = await r.json();
-    chats[activeChat].messages.push('S:' + d.response);
-    chats[activeChat].timestamps.push(Date.now());
-}
+            var uploadForm = new FormData();
+            uploadForm.append('session', activeChat);
+            uploadForm.append('file', pendingFile);
+            if(question) uploadForm.append('question', question);
+            var uploadResp = await fetch('/upload', {method:'POST', body:uploadForm});
+            var uploadData = await uploadResp.json();
+            if(uploadData.status === 'success'){
+                var askForm = new FormData();
+                askForm.append('session', activeChat);
+                askForm.append('question', question || 'Please analyze the attached file');
+                var askResp = await fetch('/ask', {method:'POST', body:askForm});
+                var askData = await askResp.json();
+                chats[activeChat].messages.push('S:' + askData.response);
+                chats[activeChat].timestamps.push(Date.now());
+            } else {
+                chats[activeChat].messages.push('S:' + (uploadData.message || 'Upload failed.'));
+                chats[activeChat].timestamps.push(Date.now());
+            }
+            pendingFile = null;
+        } else {
+            var form = new FormData();
+            form.append('question', question);
+            form.append('session', activeChat);
+            var r = await fetch('/ask', {method:'POST', body:form});
+            var d = await r.json();
+            chats[activeChat].messages.push('S:' + d.response);
+            chats[activeChat].timestamps.push(Date.now());
+        }
     } catch(e){
         chats[activeChat].messages.push('S:Connection error. Please try again.');
         chats[activeChat].timestamps.push(Date.now());
@@ -1609,7 +1764,7 @@ function selectFile(input){
     pendingFile = file;
     var preview = document.getElementById('filePreview');
     document.getElementById('fileName').textContent = file.name;
-preview.style.display = 'flex';
+    preview.style.display = 'flex';
     showToast('File ready. Type your question and press Ask.');
 }
 
@@ -1648,11 +1803,29 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 </script></body></html>"""
 
+
+# ============================================
+# MANIFEST
+# ============================================
+
+@app.get("/manifest.json")
+async def manifest():
+    return {
+        "name": "Safari AI Lite",
+        "short_name": "SafariLite",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#fffaf5",
+        "theme_color": "#d2691e",
+        "description": "Explore Beyond Limits"
+    }
+
+
 # ============================================
 # APP ENTRY POINT
 # ============================================
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting Safari AI Agent server...")
+    logger.info("Starting Safari AI Lite server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
