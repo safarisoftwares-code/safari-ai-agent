@@ -5,6 +5,7 @@ import time
 import logging
 import urllib.parse
 import io
+import secrets
 from pypdf import PdfReader
 from docx import Document
 from datetime import datetime
@@ -68,12 +69,29 @@ users = {}
 chats = {}
 request_counts = {}
 uploaded_files = {}
+accounts = {}  # email -> account info
+sessions = {}  # token -> email
 LAST_CLEANUP = time.time()
 LAST_REQUEST_CLEANUP = time.time()
 
 # ============================================
 # PERSISTENCE FUNCTIONS
 # ============================================
+def load_accounts():
+    global accounts
+    try:
+        with open("accounts.json", "r") as f:
+            accounts = json.load(f)
+        logger.info(f"Loaded {len(accounts)} accounts from accounts.json")
+    except:
+        accounts = {}
+
+def save_accounts():
+    try:
+        with open("accounts.json", "w") as f:
+            json.dump(accounts, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save accounts.json: {e}")
 
 def load_users():
     global users
@@ -121,6 +139,22 @@ def save_chats():
     except Exception as e:
         logger.error(f"Failed to save chats.json: {e}")
 
+def load_accounts():
+    global accounts
+    try:
+        with open("accounts.json", "r") as f:
+            accounts = json.load(f)
+        logger.info(f"Loaded {len(accounts)} accounts from accounts.json")
+    except:
+        accounts = {}
+
+def save_accounts():
+    try:
+        with open("accounts.json", "w") as f:
+            json.dump(accounts, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save accounts.json: {e}")
+
 # ============================================
 # CLEANUP FUNCTIONS
 # ============================================
@@ -161,6 +195,15 @@ def cleanup_old_request_counts():
             logger.info(f"Cleaned up request counts for session: {sid}")
         LAST_REQUEST_CLEANUP = now
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hashed):
+    return hash_password(password) == hashed
+
+def generate_session_token():
+    return secrets.token_urlsafe(32)
+
 def sanitize_input(text):
     # Remove any potentially harmful characters
     return text.replace("<", "&lt;").replace(">", "&gt;").strip()[:1000]
@@ -171,6 +214,7 @@ def sanitize_input(text):
 
 load_users()
 load_chats()
+load_accounts()
 logger.info("Safari AI Agent initialized successfully")
 
 # ============================================
@@ -409,6 +453,63 @@ async def register(email: str = Form(...)):
     logger.info(f"New user registered: {email} (plan: free)")
     return {"api_key": key, "plan": "free", "limit": 10}
 
+@app.post("/signup")
+async def signup(name: str = Form(...), email: str = Form(...), password: str = Form(...)):
+    if "@" not in email or len(password) < 4:
+        return {"status": "error", "message": "Invalid email or password too short."}
+    if email in accounts:
+        return {"status": "error", "message": "Account already exists."}
+
+    accounts[email] = {
+        "name": name,
+        "email": email,
+        "password_hash": hash_password(password),
+        "created_at": datetime.now().isoformat(),
+        "banned": False,
+        "total_queries": 0
+    }
+
+    token = generate_session_token()
+    sessions[token] = email
+    save_accounts()
+    return {
+        "status": "success",
+        "name": name,
+        "email": email,
+        "token": token,
+        "message": "Account created successfully!"
+        
+    }
+
+
+@app.post("/login")
+async def login(email: str = Form(...), password: str = Form(...)):
+    account = accounts.get(email)
+    if not account:
+        return {"status": "error", "message": "Account not found."}
+    if account.get("banned"):
+        return {"status": "error", "message": "Account suspended. Contact Safari Softwares."}
+    if not verify_password(password, account["password_hash"]):
+        return {"status": "error", "message": "Incorrect password."}
+
+    token = generate_session_token()
+    sessions[token] = email
+    save_accounts()
+    return {
+        "status": "success",
+        "name": account["name"],
+        "email": email,
+        "token": token,
+        "message": "Logged in successfully!"
+    }
+
+
+@app.post("/logout")
+async def logout(token: str = Form(...)):
+    if token in sessions:
+        del sessions[token]
+        return {"status": "success", "message": "Logged out."}
+    return {"status": "error", "message": "Invalid session."}
 
 @app.post("/ask")
 async def ask(
@@ -452,6 +553,10 @@ async def ask(
         user["queries"] = user.get("queries", 0) + 1
         user["total_queries"] = user.get("total_queries", 0) + 1
         save_users()
+
+            # If user is logged in, track query
+    if api_key in accounts:
+        accounts[api_key]["total_queries"] = accounts[api_key].get("total_queries", 0) + 1
 
     # Rate limiting: 20 requests per minute per session
     now = time.time()
@@ -550,6 +655,21 @@ if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Inv
 </script></body></html>"""
 
     # Admin panel – password validated, show dashboard
+    account_rows = ""
+    for email, acc in accounts.items():
+        name = acc.get("name","N/A")
+        total = acc.get("total_queries",0)
+        banned = acc.get("banned", False)
+        status = "🔴 Banned" if banned else "🟢 Active"
+        action = f'<a href="/admin/unban?email={email}&pw={pw}" class="btn-revoke">Unban</a>' if banned else f'<a href="/admin/ban?email={email}&pw={pw}" class="btn-revoke">Ban</a>'
+        account_rows += f"""<tr>
+            <td>{name}</td>
+            <td>{email}</td>
+            <td>{total}</td>
+            <td>{status}</td>
+            <td>{action}</td>
+        </tr>"""
+
     user_rows = ""
     for key, user in users.items():
         plan = user.get('plan','free')
@@ -637,6 +757,12 @@ tr:hover{{background:#faf5f0}}
 </div>
 </form>
 </div>
+
+<h3 style="color:#8b4513;margin-top:25px">Login Accounts</h3>
+<table>
+<tr><th>Name</th><th>Email</th><th>Total Queries</th><th>Status</th><th>Action</th></tr>
+{account_rows}
+</table>
 
 <h3 style="color:#8b4513;margin-top:25px">Registered Users</h3>
 <table>
@@ -734,10 +860,159 @@ async def admin_revoke(key: str = Form(...), pw: str = Form(...)):
     logger.warning(f"Admin attempted to revoke non-existent key: {key[:12]}...")
     return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
 
+@app.get("/admin/ban")
+async def admin_ban(email: str = "", pw: str = ""):
+    if pw != ADMIN_PASSWORD:
+        return {"error": "Invalid password"}
+    if email in accounts:
+        accounts[email]["banned"] = True
+        save_accounts()
+        logger.info(f"Admin banned account: {email}")
+        return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+    return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+
+@app.get("/admin/unban")
+async def admin_unban(email: str = "", pw: str = ""):
+    if pw != ADMIN_PASSWORD:
+        return {"error": "Invalid password"}
+    if email in accounts:
+        accounts[email]["banned"] = False
+        save_accounts()
+        logger.info(f"Admin unbanned account: {email}")
+        return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
+    return RedirectResponse(url=f"/admin?pw={pw}", status_code=303)
 
 @app.post("/admin/logout")
 async def admin_logout():
     return RedirectResponse(url="/admin", status_code=303)
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Login - Safari AI</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
+.c{background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,.2);padding:40px;width:100%;max-width:420px}
+h1{color:#8b4513;font-size:24px;margin-bottom:5px;text-align:center}
+p{color:#888;text-align:center;margin-bottom:25px;font-size:14px}
+.tab-row{display:flex;gap:10px;margin-bottom:20px}
+.tab-btn{flex:1;padding:12px;border:2px solid #d2691e;background:#fff;color:#d2691e;border-radius:10px;cursor:pointer;font-weight:bold;font-size:14px;transition:all .3s}
+.tab-btn.active{background:#d2691e;color:#fff}
+label{display:block;margin-bottom:8px;color:#555;font-weight:600;font-size:14px}
+input{padding:12px;margin-bottom:18px;width:100%;border:2px solid #e0c8a8;border-radius:10px;font-size:15px;outline:0}
+input:focus{border-color:#d2691e}
+button{background:#d2691e;color:#fff;border:0;padding:14px;border-radius:10px;cursor:pointer;font-weight:bold;width:100%;font-size:16px;transition:background .3s}
+button:hover{background:#8b4513}
+.msg{margin-top:15px;text-align:center;font-size:14px;display:none}
+.msg.error{color:#d32f2f;display:block}
+.msg.success{color:#2e7d32;display:block}
+.back{display:block;text-align:center;margin-top:15px;color:#d2691e;text-decoration:none;font-size:14px}
+.back:hover{text-decoration:underline}
+</style></head><body>
+<div class="c">
+<h1>&#x1F981; Safari AI</h1>
+<p>Login or create an account</p>
+<div class="tab-row">
+<button class="tab-btn active" id="loginTab" onclick="showLogin()">Login</button>
+<button class="tab-btn" id="signupTab" onclick="showSignup()">Sign Up</button>
+</div>
+<form id="loginForm">
+<label for="loginEmail">Email</label>
+<input type="email" id="loginEmail" placeholder="you@example.com" required>
+<label for="loginPassword">Password</label>
+<div style="position:relative;">
+    <input type="password" id="loginPassword" placeholder="Enter password" required style="padding-right:45px;">
+    <button type="button" onclick="togglePassword('loginPassword', this)" style="position:absolute;right:5px;top:37%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;width:auto;padding:5px;">👁️</button>
+</div>
+<button type="submit">Login</button>
+</form>
+<form id="signupForm" style="display:none">
+<label for="signupName">Full Name</label>
+<input type="text" id="signupName" placeholder="Your name" required>
+<label for="signupEmail">Email</label>
+<input type="email" id="signupEmail" placeholder="you@example.com" required>
+<label for="signupPassword">Password</label>
+<div style="position:relative;">
+    <input type="password" id="signupPassword" placeholder="Minimum 4 characters" required style="padding-right:45px;">
+    <button type="button" onclick="togglePassword('signupPassword', this)" style="position:absolute;right:5px;top:37%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;width:auto;padding:5px;">👁️</button>
+</div>
+<button type="submit">Create Account</button>
+</form>
+<div class="msg" id="msg"></div>
+<a href="/" class="back">&larr; Back to Safari AI</a>
+</div>
+<script>
+function showLogin(){
+    document.getElementById('loginForm').style.display='block';
+    document.getElementById('signupForm').style.display='none';
+    document.getElementById('loginTab').classList.add('active');
+    document.getElementById('signupTab').classList.remove('active');
+    document.getElementById('msg').className='msg';
+}
+function showSignup(){
+    document.getElementById('loginForm').style.display='none';
+    document.getElementById('signupForm').style.display='block';
+    document.getElementById('signupTab').classList.add('active');
+    document.getElementById('loginTab').classList.remove('active');
+    document.getElementById('msg').className='msg';
+}
+function showMsg(text,type){
+    var m=document.getElementById('msg');
+    m.textContent=text;
+    m.className='msg '+type;
+}
+
+function togglePassword(inputId, btn){
+    var input = document.getElementById(inputId);
+    if(input.type === 'password'){
+        input.type = 'text';
+        btn.textContent = '🙈';
+    } else {
+        input.type = 'password';
+        btn.textContent = '👁️';
+    }
+}
+
+document.getElementById('loginForm').addEventListener('submit',async function(e){
+    e.preventDefault();
+    var email=document.getElementById('loginEmail').value;
+    var password=document.getElementById('loginPassword').value;
+    var fd=new FormData();
+    fd.append('email',email);
+    fd.append('password',password);
+    var r=await fetch('/login',{method:'POST',body:fd});
+    var d=await r.json();
+    if(d.status==='success'){
+        localStorage.setItem('safari_token',d.token);
+        localStorage.setItem('safari_name',d.name);
+        showMsg('Welcome back, '+d.name+'! Redirecting...','success');
+        setTimeout(function(){window.location.href='/';},1000);
+    } else {
+        showMsg(d.message,'error');
+    }
+});
+document.getElementById('signupForm').addEventListener('submit',async function(e){
+    e.preventDefault();
+    var name=document.getElementById('signupName').value;
+    var email=document.getElementById('signupEmail').value;
+    var password=document.getElementById('signupPassword').value;
+    var fd=new FormData();
+    fd.append('name',name);
+    fd.append('email',email);
+    fd.append('password',password);
+    var r=await fetch('/signup',{method:'POST',body:fd});
+    var d=await r.json();
+    if(d.status==='success'){
+        localStorage.setItem('safari_token',d.token);
+        localStorage.setItem('safari_name',d.name);
+        showMsg('Account created! Welcome, '+d.name+'!','success');
+        setTimeout(function(){window.location.href='/';},1000);
+    } else {
+        showMsg(d.message,'error');
+    }
+});
+</script></body></html>"""
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Agent - Explore Beyond Limits</title>
@@ -858,7 +1133,15 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 .toast.show{opacity:1}
 </style></head><body>
 <div class="c">
-<div class="h"><span style="font-size:32px">&#x1F981;</span><div><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div></div>
+<div class="h">
+    <span style="font-size:32px">&#x1F981;</span>
+    <div style="flex:1;"><h1>Safari AI Agent</h1><p>Explore Beyond Limits</p></div>
+    <div id="userArea" style="display:flex;align-items:center;gap:10px;">
+        <span id="userName" style="font-size:13px;font-weight:bold;"></span>
+        <button id="logoutBtn" onclick="logoutUser()" style="background:#8b4513;color:#fff;border:none;padding:6px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:bold;display:none;">Logout</button>
+        <a href="/login" id="loginLink" style="color:#fff;font-size:13px;text-decoration:none;font-weight:bold;">Login</a>
+    </div>
+</div>
 <div class="tabs-container">
 <div class="tabs" id="tabs"></div>
 <button class="export-btn" onclick="exportChat()" title="Export current chat">&#x1F4E5; Export</button>
@@ -890,12 +1173,38 @@ function showToast(msg){
     setTimeout(function(){t.classList.remove('show');},2000);
 }
 
+function updateUserUI(){
+    var token = localStorage.getItem('safari_token');
+    var name = localStorage.getItem('safari_name');
+    var loginLink = document.getElementById('loginLink');
+    var logoutBtn = document.getElementById('logoutBtn');
+    var userName = document.getElementById('userName');
+    
+    if(token && name){
+        userName.textContent = '👤 ' + name;
+        loginLink.style.display = 'none';
+        logoutBtn.style.display = 'inline-block';
+    } else {
+        userName.textContent = '';
+        loginLink.style.display = 'inline';
+        logoutBtn.style.display = 'none';
+    }
+}
+
+function logoutUser(){
+    localStorage.removeItem('safari_token');
+    localStorage.removeItem('safari_name');
+    updateUserUI();
+    window.location.href = '/';
+}
+
 function loadChats(){
     try{
         var saved=localStorage.getItem('safari_chats');
         if(saved) chats=JSON.parse(saved);
-    }catch(e){}
-    if(Object.keys(chats).length===0){
+    }catch(e){ chats = {}; }
+    if(!chats || Object.keys(chats).length===0){
+        chats = {};
         var id='chat_'+Date.now();
         chats[id]={name:'New Chat',messages:[],timestamps:[]};
         saveChats();
@@ -1142,6 +1451,7 @@ async function sendEditedMessage(question){
 
 function renderMessages(){
     var box=document.getElementById('b');
+    if(!box) return;
     box.innerHTML='';
     if(!activeChat||!chats[activeChat]) return;
     var msgs=chats[activeChat].messages||[];
@@ -1312,27 +1622,30 @@ function clearAttachment(){
     showToast('Attachment removed.');
 }
 
-loadChats();
-if(!activeChat){
-    var chatIds = Object.keys(chats);
-    var existingEmpty = null;
-    for(var i=0;i<chatIds.length;i++){
-        var c = chats[chatIds[i]];
-        if(!c.messages || c.messages.length===0){
-            existingEmpty = chatIds[i];
-            break;
+document.addEventListener('DOMContentLoaded', function(){
+    updateUserUI();
+    loadChats();
+    if(!activeChat){
+        var chatIds = Object.keys(chats);
+        var existingEmpty = null;
+        for(var i=0;i<chatIds.length;i++){
+            var c = chats[chatIds[i]];
+            if(!c.messages || c.messages.length===0){
+                existingEmpty = chatIds[i];
+                break;
+            }
+        }
+        if(existingEmpty){
+            activeChat = existingEmpty;
+        } else {
+            activeChat = 'chat_' + Date.now();
+            chats[activeChat] = {name:'New Chat',messages:[],timestamps:[]};
+            saveChats();
         }
     }
-    if(existingEmpty){
-        activeChat = existingEmpty;
-    } else {
-        activeChat = 'chat_' + Date.now();
-        chats[activeChat] = {name:'New Chat',messages:[],timestamps:[]};
-        saveChats();
-    }
-}
-renderTabs();
-renderMessages();
+    renderTabs();
+    renderMessages();
+});
 </script></body></html>"""
 
 # ============================================
