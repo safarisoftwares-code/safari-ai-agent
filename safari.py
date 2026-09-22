@@ -62,6 +62,9 @@ logger = logging.getLogger("safari_ai_lite")
 # ============================================
 
 app = FastAPI(title="Safari AI Lite", version="3.0.0")
+
+SITEMAP_XML = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>https://lite.safari-ai-pro.co.ke/</loc>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n  <url>\n    <loc>https://lite.safari-ai-pro.co.ke/login</loc>\n    <changefreq>monthly</changefreq>\n    <priority>0.7</priority>\n  </url>\n</urlset>'
+ROBOTS_TXT = 'User-agent: *\nAllow: /\nDisallow: /safari-control-2026\n\nSitemap: https://lite.safari-ai-pro.co.ke/sitemap.xml'
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -1819,6 +1822,26 @@ document.addEventListener('DOMContentLoaded', function(){
     renderMessages();
 });
 </script></body></html>"""
+
+
+# ============================================
+# SITEMAP
+# ============================================
+
+@app.get("/sitemap.xml")
+async def sitemap():
+    """XML sitemap for search engines."""
+    return HTMLResponse(content=SITEMAP_XML, media_type="application/xml")
+
+
+# ============================================
+# ROBOTS.TXT
+# ============================================
+
+@app.get("/robots.txt")
+async def robots():
+    """Robots file for crawlers."""
+    return HTMLResponse(content=ROBOTS_TXT, media_type="text/plain")
 
 
 # ============================================
