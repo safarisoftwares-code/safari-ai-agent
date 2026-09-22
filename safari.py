@@ -1230,6 +1230,20 @@ document.getElementById('signupForm').addEventListener('submit',async function(e
 async def home():
     """Main chat page with full functionality."""
     return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Lite - Explore Beyond Limits</title>
+<meta name="description" content="Safari AI Lite - a lightweight AI assistant by Safari Softwares, based in Nairobi, Kenya.">
+<meta name="keywords" content="Safari AI Lite, Safari AI, AI agent Kenya, Safari Softwares, Nairobi AI">
+<meta name="author" content="Safari Softwares">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://lite.safari-ai-pro.co.ke/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Safari AI Lite - Explore Beyond Limits">
+<meta property="og:description" content="A lightweight AI assistant by Safari Softwares.">
+<meta property="og:url" content="https://lite.safari-ai-pro.co.ke/">
+<meta property="og:site_name" content="Safari AI Lite">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Safari AI Lite - Explore Beyond Limits">
+<meta name="twitter:description" content="A lightweight AI assistant by Safari Softwares.">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Safari AI Lite","applicationCategory":"BusinessApplication","operatingSystem":"Web","url":"https://lite.safari-ai-pro.co.ke/","description":"A lightweight AI assistant by Safari Softwares.","author":{"@type":"Organization","name":"Safari Softwares","url":"http://safarisoftwares.co.ke"}}</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F981;</text></svg>">
 <link rel="manifest" href="/manifest.json">
@@ -1329,7 +1343,7 @@ button#askBtn:disabled{background:#ccc;cursor:not-allowed}
 <input id="q" placeholder="Type your question or attach a file..." autofocus onkeypress="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ask()}">
 <button id="askBtn" onclick="ask()">Ask</button>
 </div>
-<div class="f">&#169; 2026 Safari Softwares | <a href="/login">Login</a> | <a href="/admin">Admin</a></div>
+<div class="f">&#169; 2026 Safari Softwares | <a href="/login">Login</a></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
