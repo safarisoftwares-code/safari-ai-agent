@@ -789,7 +789,7 @@ async def delete_data(session: str = Form(...)):
 async def admin_page(request: Request, pw: str = ""):
     """Admin dashboard with login protection."""
     if pw != ADMIN_PASSWORD:
-        return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI Lite</title>
+        return """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Login - Safari AI Lite</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5e6d3}
@@ -869,7 +869,7 @@ if(urlParams.get('error')==='1'){document.getElementById('error').innerText='Inv
             </td>
         </tr>"""
 
-    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Panel - Safari AI Lite</title>
+    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Admin Panel - Safari AI Lite</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:Segoe UI,sans-serif;background:#f5e6d3;padding:20px;min-height:100vh}}
@@ -971,7 +971,7 @@ async def admin_generate(email: str = Form(...), plan: str = Form(default="free"
 
     logger.info(f"Admin generated API key for {email} (plan: {plan})")
 
-    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Key Generated - Safari AI Lite</title>
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Key Generated - Safari AI Lite</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:Segoe UI,sans-serif;background:#f5e6d3;display:flex;justify-content:center;align-items:center;height:100vh;padding:20px}}
@@ -1099,7 +1099,7 @@ async def health():
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Login and signup page."""
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Login - Safari AI Lite</title>
+    return """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Login - Safari AI Lite</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Segoe UI,sans-serif;background:#f5e6d3;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
@@ -1232,7 +1232,7 @@ document.getElementById('signupForm').addEventListener('submit',async function(e
 @app.get("/", response_class=HTMLResponse)
 async def home():
     """Main chat page with full functionality."""
-    return """<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Lite - Explore Beyond Limits</title>
+    return """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Safari AI Lite - Explore Beyond Limits</title>
 <meta name="description" content="Safari AI Lite - a lightweight AI assistant by Safari Softwares, based in Nairobi, Kenya.">
 <meta name="keywords" content="Safari AI Lite, Safari AI, AI agent Kenya, Safari Softwares, Nairobi AI">
 <meta name="author" content="Safari Softwares">
@@ -1243,6 +1243,8 @@ async def home():
 <meta property="og:description" content="A lightweight AI assistant by Safari Softwares.">
 <meta property="og:url" content="https://lite.safari-ai-pro.co.ke/">
 <meta property="og:site_name" content="Safari AI Lite">
+<meta property="og:locale" content="en_KE">
+<meta http-equiv="content-language" content="en">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="Safari AI Lite - Explore Beyond Limits">
 <meta name="twitter:description" content="A lightweight AI assistant by Safari Softwares.">
